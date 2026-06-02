@@ -183,7 +183,7 @@ const systemModules: NavItem[] = [
         groupLabel: "Geography",
         items: [
           { id: "mdm-country", label: "Country" },
-          { id: "mdm-region", label: "Region" },
+          { id: "mdm-province", label: "Province/State" },
           { id: "mdm-city", label: "City" },
         ],
       },

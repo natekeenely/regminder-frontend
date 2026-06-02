@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { MoreVertical, SlidersHorizontal } from "lucide-react"
+import { Filter, MoreVertical, SlidersHorizontal } from "lucide-react"
 
 type EntityMeta = { key: string; columns: string[]; idColumn?: string }
 type RowData = Record<string, unknown>
@@ -116,6 +116,12 @@ const FIELD_LABEL_OVERRIDES: Record<string, string> = {
   alpha2: "ISO Alpha-2", alpha3: "ISO Alpha-3", numeric3: "ISO Numeric",
   alpha_code: "ISO Code", numeric_code: "ISO Numeric", minor_unit: "Minor Unit",
   name_short_en: "Name (EN)", name_official_en: "Official Name (EN)", name_local: "Local Name",
+  subdivision_code: "ISO 3166-2 Code", country_code: "Country", name_en: "Name (EN)", category: "Category",
+  lei_code: "LEI Code", duns_number: "DUNS Number", iban: "IBAN", swift_bic: "SWIFT/BIC", account_no: "Account No.",
+  legal_entity_id: "Legal Entity", bank_country_code: "Bank Country", tax_country_code: "Tax Country",
+  incorporation_country_code: "Incorporation Country", tax_registration_no: "Tax Registration No.",
+  rate_percent: "Rate %", is_primary: "Primary", parent_legal_entity_id: "Parent Legal Entity",
+  fiscal_year_end: "Fiscal Year End", registration_no: "Registration No.", branch_or_routing_no: "Branch/Routing No.",
 }
 // Normalize a stored date (which may be an ISO timestamp like 2026-05-30T00:00:00.000Z)
 // to the yyyy-MM-dd value an <input type="date"> expects. Falls back to the given default.
@@ -165,6 +171,145 @@ function humanizeLabel(field: string): string {
     .join(" ")
 }
 
+// Normalize an ISO 3166-1 alpha-2 code, or "" if it isn't two A–Z letters.
+function normalizeAlpha2(code: unknown): string {
+  const cc = String(code ?? "").trim().toUpperCase()
+  return /^[A-Z]{2}$/.test(cc) ? cc : ""
+}
+
+// Flag image URL from flagcdn.com. Emoji flags don't render on Windows, so we
+// use image assets instead. Returns null for an invalid code.
+function alpha2ToFlagUrl(code: unknown): string | null {
+  const cc = normalizeAlpha2(code)
+  return cc ? `https://flagcdn.com/h24/${cc.toLowerCase()}.png` : null
+}
+
+// Renders a small flag image for an alpha-2 code, with a "—" placeholder when
+// the code is missing/invalid and a graceful fallback to the letters if the
+// image fails to load (e.g. offline / blocked CDN).
+function FlagBadge({ code, className = "" }: { code: unknown; className?: string }): React.ReactNode {
+  const cc = normalizeAlpha2(code)
+  const url = alpha2ToFlagUrl(code)
+  if (!url) return <span className="text-muted-foreground">—</span>
+  return (
+    <span className="inline-flex items-center">
+      <img
+        src={url}
+        alt={cc}
+        title={cc}
+        height={16}
+        className={`inline-block h-4 w-auto rounded-[2px] ring-1 ring-border ${className}`}
+        onError={(e) => {
+          const img = e.currentTarget
+          img.style.display = "none"
+          const sib = img.nextElementSibling as HTMLElement | null
+          if (sib) sib.style.display = "inline"
+        }}
+      />
+      <span style={{ display: "none" }} className="text-xs font-medium text-muted-foreground">{cc}</span>
+    </span>
+  )
+}
+
+// Dropdown that lists saved items and lets each one be deleted inline via a
+// small "−" icon next to its name (native <select> can't host per-option icons).
+function SavedItemSelect({
+  value,
+  options,
+  placeholder,
+  onSelect,
+  onDelete,
+}: {
+  value: string
+  options: Array<{ id: string; name: string }>
+  placeholder: string
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+}): React.ReactNode {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", onDoc)
+    return () => document.removeEventListener("mousedown", onDoc)
+  }, [])
+  const selected = options.find((o) => o.id === value)
+  return (
+    <div ref={ref} className="relative w-full min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-2 text-xs"
+      >
+        <span className={`truncate ${selected ? "" : "text-muted-foreground"}`}>{selected ? selected.name : placeholder}</span>
+        <span className="shrink-0 text-muted-foreground">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg">
+          {options.length === 0 ? (
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">No saved items</div>
+          ) : (
+            options.map((o) => (
+              <div key={o.id} className={`flex items-center gap-1 rounded ${o.id === value ? "bg-primary/10" : ""}`}>
+                <button
+                  type="button"
+                  onClick={() => { onSelect(o.id); setOpen(false) }}
+                  className="min-w-0 flex-1 truncate rounded px-2 py-1.5 text-left text-xs hover:bg-muted"
+                >
+                  {o.name}
+                </button>
+                <button
+                  type="button"
+                  title={`Delete ${o.name}`}
+                  aria-label={`Delete ${o.name}`}
+                  onClick={(e) => { e.stopPropagation(); onDelete(o.id) }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-base leading-none text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                >
+                  −
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Parent entity -> connected subtable. When a parent row is opened, the child
+// list slides up from the bottom, filtered to that row.
+type SubtableDef = { childEntity: string; childMenu: string; label: string; fkColumn: string; parentField: string; columns: string[] }
+const SUBTABLES: Record<string, SubtableDef[]> = {
+  country: [
+    { childEntity: "province", childMenu: "mdm-province", label: "Provinces / States", fkColumn: "country_code", parentField: "alpha2", columns: ["subdivision_code", "name_en", "category", "status"] },
+  ],
+  "legal-entity": [
+    { childEntity: "legal-entity-bank", childMenu: "mdm-legal-entity-bank", label: "Bank Accounts", fkColumn: "legal_entity_id", parentField: "legal_entity_id", columns: ["bank_name", "account_no", "iban", "swift_bic", "currency_code", "is_primary", "status"] },
+    { childEntity: "legal-entity-tax", childMenu: "mdm-legal-entity-tax", label: "Tax Registrations", fkColumn: "legal_entity_id", parentField: "legal_entity_id", columns: ["tax_type", "tax_country_code", "tax_registration_no", "rate_percent", "is_primary", "status"] },
+    { childEntity: "legal-entity-address", childMenu: "mdm-legal-entity-address", label: "Addresses", fkColumn: "legal_entity_id", parentField: "legal_entity_id", columns: ["address_type", "line1", "city", "country_code", "is_primary", "status"] },
+    { childEntity: "legal-entity-contact", childMenu: "mdm-legal-entity-contact", label: "Contacts", fkColumn: "legal_entity_id", parentField: "legal_entity_id", columns: ["contact_name", "title", "email", "phone", "is_primary", "status"] },
+  ],
+}
+
+// Group a record's fields into topical sections for the detail view tabs.
+function groupFieldsByTopic(fields: string[]): { label: string; fields: string[] }[] {
+  const codes: string[] = [], names: string[] = [], validity: string[] = [], other: string[] = []
+  for (const f of fields) {
+    if (f === "status" || f === "valid_from" || f === "valid_to") validity.push(f)
+    else if (/(^id$|_id$|alpha\d?|numeric\d?|^code$|_code$|subdivision_code)/i.test(f)) codes.push(f)
+    else if (/(name|title)/i.test(f)) names.push(f)
+    else other.push(f)
+  }
+  const g: { label: string; fields: string[] }[] = []
+  if (codes.length) g.push({ label: "Identifiers", fields: codes })
+  if (names.length) g.push({ label: "Names", fields: names })
+  if (other.length) g.push({ label: "Details", fields: other })
+  if (validity.length) g.push({ label: "Status & Validity", fields: validity })
+  return g.length ? g : [{ label: "Information", fields }]
+}
+
 const menuToEntity: Record<string, string> = {
   "mdm-delivery-org": "delivery-org",
   "mdm-delivery-office": "delivery-office",
@@ -176,13 +321,17 @@ const menuToEntity: Record<string, string> = {
   "mdm-purchase-office": "purchase-office",
   "mdm-purchase-team": "purchase-team",
   "mdm-legal-entity": "legal-entity",
+  "mdm-legal-entity-bank": "legal-entity-bank",
+  "mdm-legal-entity-tax": "legal-entity-tax",
+  "mdm-legal-entity-address": "legal-entity-address",
+  "mdm-legal-entity-contact": "legal-entity-contact",
   "mdm-division": "division",
   "mdm-cost-center": "cost-center",
   "mdm-credit-area": "credit-area",
   "mdm-org-mapping-set": "org-mapping-set",
   "mdm-org-mapping-line": "org-mapping-line",
   "mdm-country": "country",
-  "mdm-region": "region",
+  "mdm-province": "province",
   "mdm-city": "city",
   "mdm-customer": "customer",
   "mdm-vendor": "vendor",
@@ -204,7 +353,17 @@ const menuToEntity: Record<string, string> = {
   mdm: "service-item",
 }
 
-export function MdmContent({ activeItem }: { activeItem: string }) {
+export function MdmContent({
+  activeItem,
+  drill = null,
+  onNavigate,
+  onDrillConsumed,
+}: {
+  activeItem: string
+  drill?: { column: string; value: string } | null
+  onNavigate?: (itemId: string, drill?: { column: string; value: string }) => void
+  onDrillConsumed?: () => void
+}) {
   const [entities, setEntities] = useState<EntityMeta[]>([])
   const [entity, setEntity] = useState("service-item")
   const [rows, setRows] = useState<RowData[]>([])
@@ -229,6 +388,10 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
   const [groupBy, setGroupBy] = useState("")
   const [columnOrder, setColumnOrder] = useState<string[]>([])
   const [dragColumn, setDragColumn] = useState("")
+  // Per-column quick filters (column key -> substring), applied on top of the query conditions.
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({})
+  // Which column's funnel filter popover is currently open.
+  const [filterMenuColumn, setFilterMenuColumn] = useState("")
   const [savedViews, setSavedViews] = useState<SavedView[]>([])
   const [activeViewId, setActiveViewId] = useState("")
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([])
@@ -246,7 +409,31 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [editWarnings, setEditWarnings] = useState<ApiFieldError[]>([])
   const [detailRow, setDetailRow] = useState<RowData | null>(null)
+  const [detailRowEntity, setDetailRowEntity] = useState<string | null>(null) // entity of the record shown in the drawer (may differ from grid, e.g. a line record)
   const [detailTab, setDetailTab] = useState<"overview" | "changes" | "raw">("overview")
+  // User-customizable set of fields shown in the detail drawer (persisted per entity as the default view).
+  const [detailFields, setDetailFields] = useState<string[] | null>(null)
+  const [detailViewEditing, setDetailViewEditing] = useState(false)
+  // Double-click record view: shows Header (record fields) + Line (subtables) as tabs in the grid area.
+  const [recordView, setRecordView] = useState<{ row: RowData; entityKey: string } | null>(null)
+  const [recordTab, setRecordTab] = useState("")
+  const [recordLineTab, setRecordLineTab] = useState("")
+  const [recordChildRows, setRecordChildRows] = useState<Record<string, RowData[]>>({})
+  const [recordChildLoading, setRecordChildLoading] = useState("")
+  const [headerDraft, setHeaderDraft] = useState<Record<string, string>>({})
+  const [headerEditing, setHeaderEditing] = useState(false)
+  const [lineDetail, setLineDetail] = useState<{ row: RowData; cfg: SubtableDef; isNew?: boolean } | null>(null)
+  const [lineDraft, setLineDraft] = useState<Record<string, string>>({})
+  const [lineEditing, setLineEditing] = useState(false)
+  const [selectedLineId, setSelectedLineId] = useState("")
+  const [recordSaving, setRecordSaving] = useState(false)
+  const [lineGroupBy, setLineGroupBy] = useState("")
+  const [lineDragCol, setLineDragCol] = useState("")
+  const [lineSortBy, setLineSortBy] = useState<{ field: string; dir: "asc" | "desc" } | null>(null)
+  const [lineColFilters, setLineColFilters] = useState<Record<string, string>>({})
+  const [lineFilterMenuCol, setLineFilterMenuCol] = useState("")
+  const [lineMenuCol, setLineMenuCol] = useState("")
+  const [lineColWidths, setLineColWidths] = useState<Record<string, number>>({})
   const [previewAction, setPreviewAction] = useState<{ type: "archiveFiltered"; count: number } | null>(null)
   const [detailChanges, setDetailChanges] = useState<ChangeLogItem[]>([])
   const [detailChangesLoading, setDetailChangesLoading] = useState(false)
@@ -273,7 +460,15 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
   const [aiSuggestions, setAiSuggestions] = useState<AiSuggestion[]>([])
   const [aiSuggestionRowId, setAiSuggestionRowId] = useState("")
   const [rowActionMenuId, setRowActionMenuId] = useState("")
+  const [rowMenuRect, setRowMenuRect] = useState<{ top: number; right: number } | null>(null)
+  // Master→detail drill: when a parent row with a connected subtable is selected, the
+  // grid collapses to that row and the child subtable slides up (reusing the grid engine).
   const rowActionMenuRef = useRef<HTMLDivElement | null>(null)
+  const fetchSeqRef = useRef(0)
+  const rowClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const drawerRef = useRef<HTMLDivElement | null>(null)
+  const gridCardRef = useRef<HTMLDivElement | null>(null)
+  const [drawerWidth, setDrawerWidth] = useState(420)
   const [actionReason, setActionReason] = useState("")
   const [aiPrompt, setAiPrompt] = useState("")
   const [roleMode, setRoleMode] = useState<RoleMode>("admin")
@@ -334,6 +529,15 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
 
   const activeMeta = useMemo(() => entities.find((e) => e.key === entity), [entities, entity])
   const idColumn = activeMeta?.idColumn ?? `${entity.replace(/-/g, "_")}_id`
+  // Show a dedicated emoji-flag column for entities that carry an ISO alpha-2 code (Country).
+  const showFlagColumn = (activeMeta?.columns ?? []).includes("alpha2")
+  // The detail drawer may show a record from a different entity than the grid
+  // (e.g. the parent record while drilled into its subtable), so resolve fields
+  // from the record's own entity.
+  const detailEntityKey = detailRowEntity ?? entity
+  const detailMeta = entities.find((e) => e.key === detailEntityKey) ?? activeMeta
+  const allDetailFields = useMemo(() => [...(detailMeta?.columns ?? []), "status", "valid_from", "valid_to"], [detailMeta])
+  const visibleDetailFields = detailFields && detailFields.length ? detailFields.filter((f) => allDetailFields.includes(f)) : allDetailFields
   const queryFields = useMemo(() => {
     const base = activeMeta?.columns ?? []
     const sys = ["status", "valid_from", "valid_to", idColumn]
@@ -378,8 +582,23 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
 
   useEffect(() => {
     const nextEntity = menuToEntity[activeItem]
+    setRecordView(null)
+    setShowLeftPanel(false)  // collapse Query + Builder panels by default on menu switch
+    setShowRightPanel(false)
     if (nextEntity) void loadEntity(nextEntity)
   }, [activeItem])
+
+  // Load the user's saved detail-drawer field selection for the opened record's entity.
+  useEffect(() => {
+    if (!detailRow) return
+    const saved = localStorage.getItem(`mdm.detailFields.v1.${detailEntityKey}`)
+    if (saved) {
+      try { const a = JSON.parse(saved); if (Array.isArray(a)) { setDetailFields(a as string[]); setDetailViewEditing(false); return } } catch { /* ignore */ }
+    }
+    setDetailFields(null)
+    setDetailViewEditing(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailRow, detailEntityKey])
 
   useEffect(() => {
     if (!entity) return
@@ -400,6 +619,19 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       setConditionJoin("and")
     }
   }, [entity, scopeMode])
+
+  // Apply a pending drill-down filter once the target entity is active (e.g. Country → its provinces).
+  useEffect(() => {
+    if (!drill || !entity || !activeMeta) return
+    if (!(activeMeta.columns ?? []).includes(drill.column)) return
+    setGlobalSearch("")
+    setConditionJoin("and")
+    setColumnFilters({})
+    setConditions([{ id: `drill-${Date.now()}`, field: drill.column, op: "eq", value: drill.value }])
+    setPage(1)
+    onDrillConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drill, entity, activeMeta])
 
   useEffect(() => {
     if (!entity) return
@@ -567,23 +799,24 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
     localStorage.setItem(`mdm.views.v1.${entity}`, JSON.stringify(savedViews))
   }, [entity, savedViews])
 
+  // Panel visibility is a user-wide preference, not per-entity — switching menus
+  // should preserve the open/closed state of the Query and Builder panels.
   useEffect(() => {
-    if (!entity) return
-    const v = localStorage.getItem(`mdm.leftPanel.v1.${entity}`)
+    const v = localStorage.getItem(`mdm.leftPanel.v1`)
     if (!v) return
     try {
-      const parsed = JSON.parse(v) as { show?: boolean; width?: number }
+      const parsed = JSON.parse(v) as { show?: boolean; width?: number; showRight?: boolean }
       if (typeof parsed.show === "boolean") setShowLeftPanel(parsed.show)
       if (typeof parsed.width === "number" && parsed.width >= 260 && parsed.width <= 520) setLeftPanelWidth(parsed.width)
+      if (typeof parsed.showRight === "boolean") setShowRightPanel(parsed.showRight)
     } catch {
       // ignore bad saved value
     }
-  }, [entity, scopeMode])
+  }, [])
 
   useEffect(() => {
-    if (!entity) return
-    localStorage.setItem(`mdm.leftPanel.v1.${entity}`, JSON.stringify({ show: showLeftPanel, width: leftPanelWidth }))
-  }, [entity, showLeftPanel, leftPanelWidth])
+    localStorage.setItem(`mdm.leftPanel.v1`, JSON.stringify({ show: showLeftPanel, width: leftPanelWidth, showRight: showRightPanel }))
+  }, [showLeftPanel, leftPanelWidth, showRightPanel])
 
   useEffect(() => {
     if (!rowActionMenuId) return
@@ -792,6 +1025,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
   }
 
   async function fetchEntityRows(entityKey: string, nextPage = page, nextPageSize = pageSize): Promise<void> {
+    const seq = ++fetchSeqRef.current // only the most-recently-started fetch may apply its result
     setIsLoading(true)
     try {
       const { search, status, valid_from_from, valid_to_to } = deriveApiFilters()
@@ -811,6 +1045,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       if (sortBy?.dir) query.set("sort_dir", sortBy.dir)
       const resp = await fetch(`/api/proxy/api/v1/mdm/${encodeURIComponent(entityKey)}?${query.toString()}`)
       const text = await resp.text()
+      if (seq !== fetchSeqRef.current) return // a newer fetch superseded this one
       if (!text) {
         setRows([])
         setTotalRows(0)
@@ -821,12 +1056,13 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       setRows(data.items ?? [])
       setTotalRows(Number(data.total ?? 0))
     } catch (error) {
+      if (seq !== fetchSeqRef.current) return
       const detail = error instanceof Error ? error.message : "Query failed"
       setMessage(`Load failed: ${detail}`)
       setRows([])
       setTotalRows(0)
     } finally {
-      setIsLoading(false)
+      if (seq === fetchSeqRef.current) setIsLoading(false)
     }
   }
 
@@ -865,7 +1101,10 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       : (conditionJoin === "or"
         ? activeConds.some((c) => applyCondition(r, c))
         : activeConds.every((c) => applyCondition(r, c)))
-    return searchOk && condOk
+    const colFilterOk = Object.entries(columnFilters).every(([col, q]) =>
+      !q.trim() || String(r[col] ?? "").toLowerCase().includes(q.trim().toLowerCase())
+    )
+    return searchOk && condOk && colFilterOk
   })
 
   const sortedRows = useMemo(() => {
@@ -1248,6 +1487,21 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
           <option value="">-- Select --</option>
           {options.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
+      )
+    }
+    if (field === "alpha2") {
+      return (
+        <div className="flex items-center gap-2">
+          <input
+            value={createDraft[field] ?? ""}
+            maxLength={2}
+            onChange={(e) => setCreateDraft((prev) => ({ ...prev, [field]: e.target.value.toUpperCase() }))}
+            className={`w-full rounded border px-2 py-1.5 text-sm uppercase ${createErrors[field] ? "border-destructive" : "border-border"} bg-background`}
+          />
+          <span className="flex h-9 w-12 shrink-0 items-center justify-center rounded border border-border bg-muted/40" title="Flag preview">
+            <FlagBadge code={createDraft.alpha2} className="h-5" />
+          </span>
+        </div>
       )
     }
     return (
@@ -1690,6 +1944,266 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
     setGlobalSearch(item.globalSearch)
     setConditions(item.conditions)
     setConditionJoin(item.conditionJoin ?? "and")
+  }
+
+
+  function saveDetailView(fields: string[]): void {
+    setDetailFields(fields)
+    localStorage.setItem(`mdm.detailFields.v1.${detailEntityKey}`, JSON.stringify(fields))
+    setDetailViewEditing(false)
+  }
+  function resetDetailView(): void {
+    setDetailFields(null)
+    localStorage.removeItem(`mdm.detailFields.v1.${detailEntityKey}`)
+    setDetailViewEditing(false)
+  }
+
+  function startResizeDrawer(e: React.MouseEvent): void {
+    e.preventDefault()
+    const onMove = (ev: MouseEvent) => {
+      const max = Math.floor(window.innerWidth / 3)
+      const next = Math.min(max, Math.max(360, window.innerWidth - ev.clientX))
+      setDrawerWidth(next)
+    }
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp) }
+    document.addEventListener("mousemove", onMove)
+    document.addEventListener("mouseup", onUp)
+  }
+
+  // Close the (non-modal) detail drawer when clicking outside it — but not when
+  // clicking a record in the grid, so switching records swaps the drawer in one step.
+  useEffect(() => {
+    if (!detailRow) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (drawerRef.current?.contains(t)) return
+      if (gridCardRef.current?.contains(t)) return
+      setDetailRow(null)
+    }
+    document.addEventListener("mousedown", onDown)
+    return () => document.removeEventListener("mousedown", onDown)
+  }, [detailRow])
+
+  function rowDraftFromRecord(meta: EntityMeta | undefined, row: RowData): Record<string, string> {
+    const d: Record<string, string> = {}
+    for (const f of [...(meta?.columns ?? []), "status", "valid_from", "valid_to"]) d[f] = String(row[f] ?? "")
+    return d
+  }
+
+  function openRecordView(row: RowData, entityKey: string = entity): void {
+    setRecordView({ row, entityKey })
+    setRecordTab("header-0")
+    setRecordChildRows({})
+    setRecordChildLoading("")
+    setHeaderEditing(false)
+    setHeaderDraft(rowDraftFromRecord(entities.find((e) => e.key === entityKey), row))
+    setLineDetail(null)
+    setLineEditing(false)
+    setLineGroupBy("")
+    setLineSortBy(null)
+    setLineColFilters({})
+    setLineFilterMenuCol("")
+    setLineMenuCol("")
+    setLineColWidths({})
+    const children = SUBTABLES[entityKey] ?? []
+    setRecordLineTab(children[0]?.childEntity ?? "")
+    if (children[0]) fetchRecordChild(children[0], row)
+  }
+
+  function renderRecordField(field: string, draft: Record<string, string>, setDraft: React.Dispatch<React.SetStateAction<Record<string, string>>>): React.ReactNode {
+    const v = draft[field] ?? ""
+    const set = (val: string) => setDraft((p) => ({ ...p, [field]: val }))
+    if (field === "status") {
+      return (
+        <select value={v || "active"} onChange={(e) => set(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1 text-sm">
+          <option value="draft">Draft</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option>
+        </select>
+      )
+    }
+    return <input value={v} onChange={(e) => set(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1 text-sm" />
+  }
+
+  function childIdCol(entityKey: string): string {
+    return entities.find((e) => e.key === entityKey)?.idColumn ?? `${entityKey.replace(/-/g, "_")}_id`
+  }
+
+  function openLineDetail(cfg: SubtableDef, row: RowData): void {
+    setLineDetail({ row, cfg })
+    setLineEditing(false)
+    setLineDraft(rowDraftFromRecord(entities.find((e) => e.key === cfg.childEntity), row))
+  }
+
+  function addLineRecord(cfg: SubtableDef, parentRow: RowData): void {
+    const blank: Record<string, string> = rowDraftFromRecord(entities.find((e) => e.key === cfg.childEntity), {})
+    blank[cfg.fkColumn] = String(parentRow[cfg.parentField] ?? "")
+    blank.status = "active"
+    setLineDetail({ row: {}, cfg, isNew: true })
+    setLineDraft(blank)
+    setLineEditing(true)
+    setSelectedLineId("")
+  }
+
+  async function saveLineDetail(parentRow: RowData): Promise<void> {
+    if (!lineDetail) return
+    const cfg = lineDetail.cfg
+    if (lineDetail.isNew) {
+      setRecordSaving(true)
+      try {
+        const payload: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(lineDraft)) if (String(v).trim() !== "") payload[k] = v // omit blanks so boolean/numeric cols default to null
+        payload.status = lineDraft.status || "active"
+        payload.valid_from = lineDraft.valid_from || new Date().toISOString().slice(0, 10)
+        payload.valid_to = lineDraft.valid_to || null
+        const resp = await fetch(`/api/proxy/api/v1/mdm/${encodeURIComponent(cfg.childEntity)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
+        const data = (await resp.json()) as { ok?: boolean; detail?: string }
+        if (!resp.ok || !data.ok) { setMessage(`Create failed: ${data.detail ?? "unknown"}`); return }
+        setMessage("Created")
+      } finally { setRecordSaving(false) }
+    } else {
+      const ok = await saveRecordEdit(cfg.childEntity, lineDetail.row, lineDraft)
+      if (!ok) return
+    }
+    setLineDetail(null); setLineEditing(false)
+    setRecordChildRows((prev) => { const n = { ...prev }; delete n[cfg.childEntity]; return n })
+    fetchRecordChild(cfg, parentRow)
+  }
+
+  async function deleteLineRecord(cfg: SubtableDef, row: RowData, parentRow: RowData): Promise<void> {
+    const id = String(row[childIdCol(cfg.childEntity)] ?? "")
+    if (!id) return
+    const resp = await fetch(`/api/proxy/api/v1/mdm/${encodeURIComponent(cfg.childEntity)}/${encodeURIComponent(id)}`, { method: "DELETE" })
+    setMessage(resp.ok ? "Line deleted" : "Delete failed")
+    setLineDetail(null); setSelectedLineId("")
+    setRecordChildRows((prev) => { const n = { ...prev }; delete n[cfg.childEntity]; return n })
+    fetchRecordChild(cfg, parentRow)
+  }
+
+  async function saveRecordEdit(entityKey: string, row: RowData, draft: Record<string, string>): Promise<boolean> {
+    const meta = entities.find((e) => e.key === entityKey)
+    const idCol = meta?.idColumn ?? `${entityKey.replace(/-/g, "_")}_id`
+    const rowId = String(row[idCol] ?? "")
+    if (!rowId) { setMessage("Cannot save: missing id"); return false }
+    setRecordSaving(true)
+    try {
+      const payload: Record<string, unknown> = { ...draft, version_no: Number(row.version_no ?? 1), updated_by: "mdm-ui" }
+      const resp = await fetch(`/api/proxy/api/v1/mdm/${encodeURIComponent(entityKey)}/${encodeURIComponent(rowId)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+      })
+      const data = (await resp.json()) as { ok?: boolean; detail?: string; item?: RowData }
+      if (!resp.ok || !data.ok) { setMessage(`Save failed: ${data.detail ?? "unknown"}`); return false }
+      setMessage("Saved")
+      return true
+    } catch {
+      setMessage("Save failed")
+      return false
+    } finally {
+      setRecordSaving(false)
+    }
+  }
+
+  function fetchRecordChild(cfg: SubtableDef, row: RowData): void {
+    if (recordChildRows[cfg.childEntity]) return // already loaded
+    const value = String(row[cfg.parentField] ?? "")
+    setRecordChildLoading(cfg.childEntity)
+    const q = new URLSearchParams({ limit: "1000", offset: "0" })
+    q.set("conditions", JSON.stringify([{ field: cfg.fkColumn, op: "eq", value }]))
+    q.set("condition_join", "and")
+    void fetch(`/api/proxy/api/v1/mdm/${encodeURIComponent(cfg.childEntity)}?${q.toString()}`)
+      .then((r) => r.text())
+      .then((t) => { const d = t ? (JSON.parse(t) as { items?: RowData[] }) : { items: [] }; setRecordChildRows((prev) => ({ ...prev, [cfg.childEntity]: d.items ?? [] })) })
+      .catch(() => setRecordChildRows((prev) => ({ ...prev, [cfg.childEntity]: [] })))
+      .finally(() => setRecordChildLoading(""))
+  }
+
+  // Funnel filter trigger + popover for a column. Must sit inside a `relative` parent.
+  function renderColFilter(c: string): React.ReactNode {
+    const active = !!columnFilters[c]?.trim()
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setFilterMenuColumn((prev) => prev === c ? "" : c)}
+          title={active ? `Filtered: ${columnFilters[c]}` : "Filter this column"}
+          aria-label="Filter column"
+          className={`rounded p-1 hover:bg-muted ${active ? "text-primary" : "text-muted-foreground"}`}
+        >
+          <Filter size={13} fill={active ? "currentColor" : "none"} />
+        </button>
+        {filterMenuColumn === c && (
+          <div className="absolute right-0 top-7 z-30 w-48 rounded border border-border bg-popover p-2 text-popover-foreground shadow-lg">
+            <input
+              autoFocus
+              value={columnFilters[c] ?? ""}
+              onChange={(e) => setColumnFilters((prev) => ({ ...prev, [c]: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setFilterMenuColumn("") }}
+              placeholder={`Filter ${humanizeLabel(c)}…`}
+              className="w-full rounded border border-border bg-background px-2 py-1 text-xs font-normal"
+            />
+            {active && (
+              <button
+                onClick={() => { setColumnFilters((prev) => { const n = { ...prev }; delete n[c]; return n }); setFilterMenuColumn("") }}
+                className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
+              >
+                Clear filter
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    )
+  }
+
+  function startLineColResize(col: string, e: React.MouseEvent): void {
+    e.preventDefault(); e.stopPropagation()
+    const startX = e.clientX
+    const th = (e.currentTarget as HTMLElement).closest("th") as HTMLElement | null
+    const startW = th?.getBoundingClientRect().width ?? 140
+    const onMove = (ev: MouseEvent) => setLineColWidths((prev) => ({ ...prev, [col]: Math.max(80, startW + (ev.clientX - startX)) }))
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp) }
+    document.addEventListener("mousemove", onMove)
+    document.addEventListener("mouseup", onUp)
+  }
+
+  // Line-table column header matching the main grid: name + sort toggle + funnel + kebab menu.
+  function renderLineHeader(c: string): React.ReactNode {
+    const active = !!lineColFilters[c]?.trim()
+    return (
+      <div className="relative flex items-center justify-between gap-2">
+        <button type="button" onClick={() => setLineSortBy((p) => (p?.field === c ? (p.dir === "asc" ? { field: c, dir: "desc" } : null) : { field: c, dir: "asc" }))} className="inline-flex items-center gap-1 hover:text-foreground">
+          {humanizeLabel(c)}
+          <span className={`text-[10px] ${lineSortBy?.field === c ? "text-primary" : "text-muted-foreground/50"}`}>{lineSortBy?.field === c ? (lineSortBy.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+        </button>
+        <span className="inline-flex items-center gap-0.5">
+          <button type="button" onClick={() => setLineFilterMenuCol((prev) => prev === c ? "" : c)} title={active ? `Filtered: ${lineColFilters[c]}` : "Filter this column"} aria-label="Filter column" className={`rounded p-1 hover:bg-muted ${active ? "text-primary" : "text-muted-foreground"}`}>
+            <Filter size={13} fill={active ? "currentColor" : "none"} />
+          </button>
+          <button type="button" onClick={() => setLineMenuCol((prev) => prev === c ? "" : c)} className="rounded px-1 text-xs hover:bg-muted">⋮</button>
+        </span>
+        {lineFilterMenuCol === c && (
+          <div className="absolute right-0 top-7 z-30 w-48 rounded border border-border bg-popover p-2 text-popover-foreground shadow-lg">
+            <input autoFocus value={lineColFilters[c] ?? ""} onChange={(e) => setLineColFilters((prev) => ({ ...prev, [c]: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setLineFilterMenuCol("") }} placeholder={`Filter ${humanizeLabel(c)}…`} className="w-full rounded border border-border bg-background px-2 py-1 text-xs font-normal" />
+            {active && <button onClick={() => { setLineColFilters((prev) => { const n = { ...prev }; delete n[c]; return n }); setLineFilterMenuCol("") }} className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-destructive">Clear filter</button>}
+          </div>
+        )}
+        {lineMenuCol === c && (
+          <div className="absolute right-0 top-7 z-30 w-40 rounded border border-border bg-popover p-1 text-xs text-popover-foreground shadow-lg">
+            <button onClick={() => { setLineSortBy({ field: c, dir: "asc" }); setLineMenuCol("") }} className="block w-full rounded px-2 py-1 text-left hover:bg-muted">Sort Ascending</button>
+            <button onClick={() => { setLineSortBy({ field: c, dir: "desc" }); setLineMenuCol("") }} className="block w-full rounded px-2 py-1 text-left hover:bg-muted">Sort Descending</button>
+            <button onClick={() => { setLineGroupBy(c); setLineMenuCol("") }} className="block w-full rounded px-2 py-1 text-left hover:bg-muted">Group by this</button>
+            <button onClick={() => { setLineColWidths((p) => { const n = { ...p }; delete n[c]; return n }); setLineMenuCol("") }} className="block w-full rounded px-2 py-1 text-left hover:bg-muted">Reset width</button>
+          </div>
+        )}
+        <span onMouseDown={(e) => startLineColResize(c, e)} className="absolute -right-1.5 top-1/2 h-4 w-1.5 -translate-y-1/2 cursor-col-resize rounded bg-border/60 hover:bg-primary/70" title="Drag to resize" />
+      </div>
+    )
+  }
+
+  function deleteSavedFilter(filterId: string): void {
+    if (!filterId) return
+    const item = savedFilters.find((f) => f.id === filterId)
+    setSavedFilters((prev) => prev.filter((f) => f.id !== filterId))
+    if (activeFilterId === filterId) setActiveFilterId("")
+    setMessage(item ? `Filter deleted: ${item.name}` : "Filter deleted")
   }
 
   function applyQuickPresetValue(preset: string): void {
@@ -2173,7 +2687,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
   }, [importPreview.headers])
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden p-6">
       {message && (
         <div data-ui-error={messageIsError ? "true" : "false"} className={`mb-3 text-xs ${messageIsError ? "text-destructive" : "text-primary"}`}>
           {message}
@@ -2202,21 +2716,21 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       <div className="mb-2 flex items-center gap-2">
         <button
           onClick={() => setShowLeftPanel((v) => !v)}
-          className={`rounded border px-2 py-1 text-xs ${!showLeftPanel ? "border-primary bg-primary/15 text-primary" : "border-border"}`}
+          className={`rounded border px-2 py-1 text-xs ${showLeftPanel ? "border-primary bg-primary/15 text-primary" : "border-border"}`}
         >
           Query
         </button>
         <button
           onClick={() => setShowRightPanel((v) => !v)}
-          className={`rounded border px-2 py-1 text-xs ${!showRightPanel ? "border-primary bg-primary/15 text-primary" : "border-border"}`}
+          className={`rounded border px-2 py-1 text-xs ${showRightPanel ? "border-primary bg-primary/15 text-primary" : "border-border"}`}
         >
           Builder
         </button>
       </div>
 
-      <div className="flex items-start gap-4 overflow-x-auto">
+      <div className="flex min-h-0 flex-1 items-stretch gap-4 overflow-x-auto">
         {showLeftPanel && (
-        <aside className="relative shrink-0 space-y-3" style={{ width: `${leftPanelWidth}px`, minWidth: `${leftPanelWidth}px` }}>
+        <aside className="relative min-h-0 shrink-0 space-y-3 self-stretch overflow-y-auto overflow-x-hidden pr-1" style={{ width: `${leftPanelWidth}px`, minWidth: `${leftPanelWidth}px` }}>
           <div
             onMouseDown={startResizeLeftPanel}
             className="absolute -right-2 top-0 hidden h-full w-1 cursor-col-resize rounded bg-border/60 hover:bg-primary/70 md:block"
@@ -2250,10 +2764,13 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                 </div>
                 <div>
                   <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Saved filter</label>
-                  <select value={activeFilterId} onChange={(e) => applySavedFilter(e.target.value)} className="w-full rounded-md border border-border bg-background px-2 py-2 text-xs">
-                    <option value="">Apply saved filter...</option>
-                    {savedFilters.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                  </select>
+                  <SavedItemSelect
+                    value={activeFilterId}
+                    options={savedFilters.map((f) => ({ id: f.id, name: f.name }))}
+                    placeholder="Apply saved filter..."
+                    onSelect={applySavedFilter}
+                    onDelete={deleteSavedFilter}
+                  />
                 </div>
               </div>
               <div>
@@ -2369,9 +2886,192 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
         </aside>
         )}
 
-        <div className="min-w-[760px] flex-1 overflow-hidden rounded-lg border border-border bg-card">
-        <div className="mx-2 mt-2 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-          {groupBy ? `Grouped by: ${groupBy}` : "Drag a column header to group (use Properties panel Group By for now)"}
+        <div ref={gridCardRef} className="flex h-full min-h-0 min-w-[760px] flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card">
+        {recordView ? (() => {
+          const meta = entities.find((e) => e.key === recordView.entityKey) ?? activeMeta
+          const rfields = [...(meta?.columns ?? []), "status", "valid_from", "valid_to"]
+          const groups = groupFieldsByTopic(rfields)
+          const children = SUBTABLES[recordView.entityKey] ?? []
+          const row = recordView.row
+          const title = String(row.name_short_en ?? row.name ?? row.name_en ?? row[(meta?.columns ?? [])[0]] ?? "")
+          const hasFlag = (meta?.columns ?? []).includes("alpha2")
+          const lineCfg = children.find((c) => c.childEntity === recordLineTab) ?? children[0]
+          const lineRows = lineCfg ? (recordChildRows[lineCfg.childEntity] ?? []) : []
+          const selRow = lineCfg ? lineRows.find((cr) => String(cr[childIdCol(lineCfg.childEntity)] ?? "") === selectedLineId) : undefined
+          const fieldRow = (f: string, val: React.ReactNode) => (
+            <div key={f} className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate text-[11px] text-muted-foreground">{humanizeLabel(f)}</span>
+              <div className="min-w-0 break-words">{val}</div>
+            </div>
+          )
+          return (
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto p-2 text-[13px]">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  {hasFlag && <FlagBadge code={row.alpha2} />}
+                  <span className="truncate text-sm font-semibold">{title || humanizeLabel(recordView.entityKey)}</span>
+                  <span className="text-xs text-muted-foreground">· {humanizeLabel(recordView.entityKey)}</span>
+                </div>
+                <button onClick={() => setRecordView(null)} className="shrink-0 rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Close ✕</button>
+              </div>
+
+              {/* SECTION 1 — HEADER */}
+              <section className="rounded-md border border-border bg-card">
+                <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-2 py-1">
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="mr-1 text-[11px] font-semibold text-muted-foreground">HEADER</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {!headerEditing && canWrite && <button onClick={() => { setHeaderDraft(rowDraftFromRecord(meta, row)); setHeaderEditing(true) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Edit</button>}
+                    {headerEditing && <button disabled={recordSaving} onClick={async () => { const ok = await saveRecordEdit(recordView.entityKey, row, headerDraft); if (ok) { setHeaderEditing(false); void loadEntity(entity) } }} className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground">{recordSaving ? "Saving…" : "Save"}</button>}
+                    {headerEditing && <button onClick={() => { setHeaderEditing(false); setHeaderDraft(rowDraftFromRecord(meta, row)) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Cancel</button>}
+                  </div>
+                </div>
+                <div className="space-y-2.5 px-2 py-1.5">
+                  {groups.map((grp) => (
+                    <div key={grp.label}>
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{grp.label}</div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 md:grid-cols-3 xl:grid-cols-4">
+                        {grp.fields.map((f) => fieldRow(f, headerEditing ? renderRecordField(f, headerDraft, setHeaderDraft) : (f === "status" ? (row[f] ? humanizeLabel(String(row[f])) : "-") : (String(row[f] ?? "") || "-"))))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* SECTION 2 — LINE */}
+              {children.length > 0 && (
+                <section className="rounded-md border border-border bg-card">
+                  <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-2 py-1">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="mr-1 text-[11px] font-semibold text-muted-foreground">LINE</span>
+                      {lineDetail ? (
+                        <button onClick={() => { setLineDetail(null); setLineEditing(false) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">← Back</button>
+                      ) : children.map((c) => (
+                        <button key={c.childEntity} onClick={() => { setRecordLineTab(c.childEntity); setSelectedLineId(""); fetchRecordChild(c, row) }} className={`rounded px-2 py-0.5 text-xs ${recordLineTab === c.childEntity ? "bg-primary/15 font-medium text-primary" : "text-muted-foreground hover:bg-muted"}`}>
+                          {c.label}{recordChildRows[c.childEntity] ? ` (${recordChildRows[c.childEntity].length})` : ""}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {lineDetail ? (
+                        <>
+                          {!lineEditing && canWrite && !lineDetail.isNew && <button onClick={() => { setLineDraft(rowDraftFromRecord(entities.find((e) => e.key === lineDetail.cfg.childEntity), lineDetail.row)); setLineEditing(true) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Edit</button>}
+                          {lineEditing && <button disabled={recordSaving} onClick={() => void saveLineDetail(row)} className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground">{recordSaving ? "Saving…" : "Save"}</button>}
+                          {lineEditing && <button onClick={() => { if (lineDetail.isNew) { setLineDetail(null) } setLineEditing(false) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Cancel</button>}
+                          {!lineEditing && canDelete && !lineDetail.isNew && <button onClick={() => void deleteLineRecord(lineDetail.cfg, lineDetail.row, row)} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Delete</button>}
+                        </>
+                      ) : lineCfg ? (
+                        <>
+                          {canWrite && <button onClick={() => addLineRecord(lineCfg, row)} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Add</button>}
+                          {canWrite && <button disabled={!selRow} onClick={() => selRow && openLineDetail(lineCfg, selRow)} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted disabled:opacity-40">Edit</button>}
+                          {canDelete && <button disabled={!selRow} onClick={() => selRow && void deleteLineRecord(lineCfg, selRow, row)} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted disabled:opacity-40">Delete</button>}
+                          <button disabled={!selectedLineId} onClick={() => setSelectedLineId("")} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted disabled:opacity-40">Cancel</button>
+                          {onNavigate && <button onClick={() => { onNavigate(lineCfg.childMenu, { column: lineCfg.fkColumn, value: String(row[lineCfg.parentField] ?? "") }); setRecordView(null) }} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted">Open full list ▸</button>}
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="px-2 py-1.5">
+                    {lineDetail ? (
+                      <div className="space-y-2.5">
+                        {groupFieldsByTopic([...(entities.find((e) => e.key === lineDetail.cfg.childEntity)?.columns ?? []), "status", "valid_from", "valid_to"]).map((grp) => (
+                          <div key={grp.label}>
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{grp.label}</div>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 md:grid-cols-3 xl:grid-cols-4">
+                              {grp.fields.map((f) => fieldRow(f, lineEditing ? renderRecordField(f, lineDraft, setLineDraft) : (f === "status" ? (lineDetail.row[f] ? humanizeLabel(String(lineDetail.row[f])) : "-") : (String(lineDetail.row[f] ?? "") || "-"))))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : !lineCfg ? null : recordChildLoading === lineCfg.childEntity ? (
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">Loading…</div>
+                    ) : lineRows.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">No {lineCfg.label.toLowerCase()} yet. Use Add, or double-click a row to view/edit.</div>
+                    ) : (() => {
+                      const renderLineRow = (cr: RowData, i: number) => {
+                        const cid = String(cr[childIdCol(lineCfg.childEntity)] ?? "")
+                        return (
+                          <tr
+                            key={i}
+                            className={`cursor-pointer border-t border-border/60 hover:bg-muted/40 ${selectedLineId === cid ? "bg-primary/10" : ""}`}
+                            onClick={() => {
+                              setSelectedLineId(cid)
+                              if (rowClickTimerRef.current) clearTimeout(rowClickTimerRef.current)
+                              rowClickTimerRef.current = setTimeout(() => { rowClickTimerRef.current = null; setDetailRowEntity(lineCfg.childEntity); setDetailRow(cr); setDetailTab("overview") }, 220)
+                            }}
+                            onDoubleClick={() => { if (rowClickTimerRef.current) { clearTimeout(rowClickTimerRef.current); rowClickTimerRef.current = null } setDetailRow(null); openLineDetail(lineCfg, cr) }}
+                          >
+                            {lineCfg.columns.map((col) => <td key={col} className="px-2 py-1">{col === "status" ? (cr[col] ? humanizeLabel(String(cr[col])) : "-") : (String(cr[col] ?? "") || "-")}</td>)}
+                          </tr>
+                        )
+                      }
+                      const filteredLineRows = lineRows.filter((r) => Object.entries(lineColFilters).every(([c, q]) => !q.trim() || String(r[c] ?? "").toLowerCase().includes(q.trim().toLowerCase())))
+                      const sortedLineRows = lineSortBy
+                        ? [...filteredLineRows].sort((a, b) => { const cmp = String(a[lineSortBy.field] ?? "").localeCompare(String(b[lineSortBy.field] ?? ""), undefined, { numeric: true, sensitivity: "base" }); return lineSortBy.dir === "asc" ? cmp : -cmp })
+                        : filteredLineRows
+                      const lineGroups = lineGroupBy
+                        ? Object.entries(sortedLineRows.reduce<Record<string, RowData[]>>((m, r) => { const k = String(r[lineGroupBy] ?? "(blank)"); (m[k] = m[k] || []).push(r); return m }, {})).map(([key, rows]) => ({ key, rows }))
+                        : [{ key: "", rows: sortedLineRows }]
+                      return (
+                        <div>
+                          <div
+                            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move" }}
+                            onDrop={(e) => { e.preventDefault(); if (lineDragCol) setLineGroupBy(lineDragCol); setLineDragCol("") }}
+                            className="mb-2 flex items-center justify-between gap-2 rounded border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground"
+                          >
+                            {lineGroupBy ? <span className="inline-flex items-center gap-2">Grouped by: <span className="rounded bg-primary/10 px-2 py-0.5 font-medium text-primary">{humanizeLabel(lineGroupBy)}</span></span> : "Drag a column header here to group"}
+                            {lineGroupBy && <button onClick={() => setLineGroupBy("")} className="rounded px-1 hover:text-destructive" title="Clear grouping">Clear</button>}
+                          </div>
+                          <table className="min-w-full text-[13px]">
+                            <thead className="bg-muted text-muted-foreground"><tr>{lineCfg.columns.map((col) => (
+                              <th
+                                key={col}
+                                draggable
+                                onDragStart={(e) => { setLineDragCol(col); e.dataTransfer.effectAllowed = "move" }}
+                                style={lineColWidths[col] ? { width: lineColWidths[col], minWidth: lineColWidths[col] } : undefined}
+                                className="px-3 py-2 text-left font-medium"
+                              >
+                                {renderLineHeader(col)}
+                              </th>
+                            ))}</tr></thead>
+                            <tbody>
+                              {lineGroups.map((g, gi) => (
+                                <React.Fragment key={`${g.key}-${gi}`}>
+                                  {lineGroupBy && (
+                                    <tr className="border-t border-border/60 bg-muted/30">
+                                      <td colSpan={lineCfg.columns.length} className="px-2 py-1 text-xs font-medium">{humanizeLabel(lineGroupBy)}: {g.key} ({g.rows.length})</td>
+                                    </tr>
+                                  )}
+                                  {g.rows.map((cr, i) => renderLineRow(cr, i))}
+                                </React.Fragment>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                </section>
+              )}
+            </div>
+          )
+        })() : (<>
+        <div
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move" }}
+          onDrop={(e) => { e.preventDefault(); if (dragColumn) setGroupBy(dragColumn); setDragColumn("") }}
+          className="mx-2 mt-2 flex items-center justify-between gap-2 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
+        >
+          {groupBy ? (
+            <span className="inline-flex items-center gap-2">
+              Grouped by: <span className="rounded bg-primary/10 px-2 py-0.5 font-medium text-primary">{humanizeLabel(groupBy)}</span>
+            </span>
+          ) : (
+            "Drag a column header here to group"
+          )}
+          {groupBy && (
+            <button onClick={() => setGroupBy("")} className="rounded px-1 text-muted-foreground hover:text-destructive" title="Clear grouping">Clear</button>
+          )}
         </div>
         <div className="border-b border-border bg-muted/20 p-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -2397,9 +3097,9 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
             ) : null}
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           <table className="min-w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/40 text-muted-foreground">
+            <thead className="sticky top-0 z-20 bg-muted text-muted-foreground">
               <tr>
                 <th className="sticky left-0 z-20 w-9 bg-muted px-2 py-2 text-left">
                   <input
@@ -2416,18 +3116,29 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                     }}
                   />
                 </th>
+                {showFlagColumn && <th className="px-3 py-2 text-left">Flag</th>}
                 {visibleColumns.map((c) => (
                   <th
                     key={c}
                     draggable
-                    onDragStart={() => setDragColumn(c)}
+                    onDragStart={(e) => { setDragColumn(c); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c) }}
                     onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => moveColumn(dragColumn, c)}
+                    onDrop={(e) => { e.preventDefault(); moveColumn(dragColumn || e.dataTransfer.getData("text/plain"), c) }}
                     className={`px-3 py-2 text-left ${selectedColumn === c ? "bg-primary/10 text-foreground" : ""}`}
                   >
                     <div className="relative flex items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1">
-                        {humanizeLabel(c)}
+                        <button
+                          type="button"
+                          onClick={() => setSortBy((prev) => (prev?.field === c ? (prev.dir === "asc" ? { field: c, dir: "desc" } : null) : { field: c, dir: "asc" }))}
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          title="Click to sort"
+                        >
+                          {humanizeLabel(c)}
+                          <span className={`text-[10px] ${sortBy?.field === c ? "text-primary" : "text-muted-foreground/50"}`}>
+                            {sortBy?.field === c ? (sortBy.dir === "asc" ? "▲" : "▼") : "↕"}
+                          </span>
+                        </button>
                         {(validationSchema?.requiredFields?.includes(c) || validationRules[c]?.required || validationRules[c]?.regex || validationRules[c]?.enum) ? (
                           <span
                             className="rounded border border-border px-1 text-[9px] text-muted-foreground"
@@ -2441,7 +3152,10 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                           </span>
                         ) : null}
                       </span>
-                      <button onClick={() => setMenuColumn((prev) => prev === c ? "" : c)} className="rounded px-1 text-xs hover:bg-muted">⋮</button>
+                      <span className="inline-flex items-center gap-0.5">
+                        {renderColFilter(c)}
+                        <button onClick={() => setMenuColumn((prev) => prev === c ? "" : c)} className="rounded px-1 text-xs hover:bg-muted">⋮</button>
+                      </span>
                       {menuColumn === c && (
                         <div className="absolute right-0 top-6 z-20 w-40 rounded border border-border bg-popover p-1 text-xs text-popover-foreground shadow-lg">
                           <button onClick={() => columnMenuAction("sortAsc", c)} className="block w-full rounded px-2 py-1 text-left hover:bg-muted">Sort Ascending</button>
@@ -2459,9 +3173,15 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                     </div>
                   </th>
                 ))}
-                <th className="px-3 py-2 text-left">Status</th>
-                <th className="px-3 py-2 text-left">Valid From</th>
-                <th className="px-3 py-2 text-left">Valid To</th>
+                <th className="px-3 py-2 text-left">
+                  <div className="relative flex items-center justify-between gap-2">Status {renderColFilter("status")}</div>
+                </th>
+                <th className="px-3 py-2 text-left">
+                  <div className="relative flex items-center justify-between gap-2">Valid From {renderColFilter("valid_from")}</div>
+                </th>
+                <th className="px-3 py-2 text-left">
+                  <div className="relative flex items-center justify-between gap-2">Valid To {renderColFilter("valid_to")}</div>
+                </th>
                 <th className="sticky right-0 z-20 w-28 min-w-28 bg-muted px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
@@ -2469,6 +3189,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
               {inlineAddMode && (
                 <tr className="border-t border-border/60 bg-primary/5">
                   <td className={`${rowCellPaddingClass} sticky left-0 z-10 w-9 bg-card`} />
+                  {showFlagColumn && <td className={rowCellPaddingClass}><FlagBadge code={inlineDraft.alpha2} /></td>}
                   {visibleColumns.map((c) => (
                     <td key={`inline-${c}`} className={rowCellPaddingClass}>
                       {(lookupOptions[c] ?? ENUM_FIELD_OPTIONS[c]) ? (
@@ -2526,19 +3247,19 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
               )}
               {isLoading ? (
                 <tr>
-                  <td colSpan={visibleColumns.length + 5} className="px-3 py-8 text-center text-sm text-muted-foreground">Loading records...</td>
+                  <td colSpan={visibleColumns.length + (showFlagColumn ? 6 : 5)} className="px-3 py-8 text-center text-sm text-muted-foreground">Loading records...</td>
                 </tr>
               ) : pagedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={visibleColumns.length + 5} className="px-3 py-8 text-center text-sm text-muted-foreground">No records found for current filters.</td>
+                  <td colSpan={visibleColumns.length + (showFlagColumn ? 6 : 5)} className="px-3 py-8 text-center text-sm text-muted-foreground">No records found for current filters.</td>
                 </tr>
               ) : null}
               {!isLoading && pagedRows.length > 0 && groupedRows.map((g, gi) => (
                 <React.Fragment key={`${g.key}-${gi}`}>
                   {groupBy && (
                     <tr className="border-t border-border/60 bg-muted/30">
-                      <td colSpan={visibleColumns.length + 5} className="px-3 py-1.5 text-xs font-medium">
-                        {groupBy}: {g.key} ({g.rows.length})
+                      <td colSpan={visibleColumns.length + (showFlagColumn ? 6 : 5)} className="px-3 py-1.5 text-xs font-medium">
+                        {humanizeLabel(groupBy)}: {g.key} ({g.rows.length})
                       </td>
                     </tr>
                   )}
@@ -2550,8 +3271,20 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                     // (don't open the detail panel).
                     if (editingId === getRowId(r)) { setSelectedRowId(getRowId(r)); return }
                     setSelectedRowId(getRowId(r))
-                    setDetailRow(r)
-                    setDetailTab("overview")
+                    // Defer the single-click action so a double-click can pre-empt it
+                    // (otherwise the detail drawer overlay swallows the 2nd click).
+                    if (rowClickTimerRef.current) clearTimeout(rowClickTimerRef.current)
+                    rowClickTimerRef.current = setTimeout(() => {
+                      rowClickTimerRef.current = null
+                      setDetailRowEntity(entity)
+                      setDetailRow(r)
+                      setDetailTab("overview")
+                    }, 220)
+                  }}
+                  onDoubleClick={() => {
+                    if (rowClickTimerRef.current) { clearTimeout(rowClickTimerRef.current); rowClickTimerRef.current = null }
+                    setDetailRow(null)
+                    openRecordView(r)
                   }}
                   className={`cursor-pointer border-t border-border/60 ${rowDirty(r) ? "bg-amber-500/10" : ""} ${lastCreatedRowId === getRowId(r) ? "bg-emerald-500/15 ring-1 ring-emerald-400/40" : ""} ${selectedRowId === getRowId(r) ? "bg-primary/10" : ""}`}
                 >
@@ -2562,6 +3295,11 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                       onChange={() => toggleRowSelection(getRowId(r))}
                     />
                   </td>
+                  {showFlagColumn && (
+                    <td className={rowCellPaddingClass}>
+                      <FlagBadge code={editingId === String(r[idColumn] ?? "") ? editDraft.alpha2 : r.alpha2} />
+                    </td>
+                  )}
                   {visibleColumns.map((c) => (
                     <td key={c} className={`${rowCellPaddingClass} ${isDirtyCell(r, c) ? "bg-amber-500/20" : ""}`}>
                       {editingId === String(r[idColumn] ?? "") ? (
@@ -2586,7 +3324,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                       <input value={editDraft.valid_to ?? ""} onChange={(e) => setEditDraft((prev) => ({ ...prev, valid_to: e.target.value }))} className={`w-28 rounded border px-1 py-0.5 text-xs ${fieldErrors.valid_to ? "border-destructive" : "border-border"} bg-background`} title={fieldErrors.valid_to ?? ""} />
                     ) : formatCellValue(r.valid_to)}
                   </td>
-                  <td className={`${rowCellPaddingClass} sticky right-0 z-10 w-28 min-w-28 bg-card`} onClick={(e) => e.stopPropagation()}>
+                  <td className={`${rowCellPaddingClass} sticky right-0 w-28 min-w-28 bg-card ${rowActionMenuId === String(r[idColumn] ?? "") ? "z-40" : "z-10"}`} onClick={(e) => e.stopPropagation()}>
                     {editingId === String(r[idColumn] ?? "") ? (
                       <div className="flex gap-1">
                         <button onClick={() => void saveEditRow(r)} className="rounded border border-border px-2 py-0.5 text-xs">Save</button>
@@ -2595,7 +3333,13 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                     ) : (
                       <div className="relative inline-flex" ref={rowActionMenuId === String(r[idColumn] ?? "") ? rowActionMenuRef : null}>
                         <button
-                          onClick={() => setRowActionMenuId((v) => (v === String(r[idColumn] ?? "") ? "" : String(r[idColumn] ?? "")))}
+                          onClick={(e) => {
+                            const id = String(r[idColumn] ?? "")
+                            if (rowActionMenuId === id) { setRowActionMenuId(""); return }
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setRowMenuRect({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+                            setRowActionMenuId(id)
+                          }}
                           className="rounded border border-border px-2 py-0.5 text-xs"
                           title="Row actions"
                           aria-label="Row actions"
@@ -2603,7 +3347,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                           <MoreVertical className="h-3.5 w-3.5" />
                         </button>
                         {rowActionMenuId === String(r[idColumn] ?? "") && (
-                          <div className="absolute right-0 top-7 z-20 min-w-[120px] rounded-md border border-border bg-popover p-1 shadow-lg">
+                          <div style={{ position: "fixed", top: rowMenuRect?.top, right: rowMenuRect?.right }} className="z-50 min-w-[120px] rounded-md border border-border bg-popover p-1 shadow-lg">
                             <button
                               onClick={() => { setRowActionMenuId(""); void runAiAssist(r) }}
                               className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted"
@@ -2616,6 +3360,14 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                                 className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted"
                               >
                                 Edit
+                              </button>
+                            )}
+                            {SUBTABLES[entity] && (
+                              <button
+                                onClick={() => { setRowActionMenuId(""); openRecordView(r) }}
+                                className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted"
+                              >
+                                Open record ▸
                               </button>
                             )}
                             {canDelete && (
@@ -2638,35 +3390,33 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground">
           <span>{`Page ${page} of ${totalPages} (${totalRows || sortedRows.length} rows)`}</span>
           <div className="flex items-center gap-1">
             <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded border border-border px-2 py-1 disabled:opacity-40">Prev</button>
             <button disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="rounded border border-border px-2 py-1 disabled:opacity-40">Next</button>
           </div>
         </div>
+        </>)}
       </div>
 
-        {showRightPanel && <aside className="w-[220px] shrink-0 rounded-lg border border-border bg-card p-4">
+        {showRightPanel && <aside className="min-h-0 w-[220px] shrink-0 self-stretch overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-card p-4">
           <div className="mb-3 text-sm font-semibold">Properties</div>
           <label className="mb-1 block text-xs text-muted-foreground">Saved Views</label>
-          <div className="mb-2 flex gap-2">
-            <select value={activeViewId} onChange={(e) => applyView(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm">
-              <option value="">Select view</option>
-              {savedViews.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-            </select>
-            <button onClick={saveCurrentView} className="rounded border border-border px-2 py-1 text-xs">Save</button>
+          <div className="mb-3 flex items-center gap-1">
+            <SavedItemSelect
+              value={activeViewId}
+              options={savedViews.map((v) => ({ id: v.id, name: v.name }))}
+              placeholder="Select view"
+              onSelect={applyView}
+              onDelete={deleteView}
+            />
+            <button onClick={saveCurrentView} className="shrink-0 rounded border border-border px-2 py-1.5 text-xs">Save</button>
           </div>
-          {activeViewId && <button onClick={() => deleteView(activeViewId)} className="mb-3 w-full rounded border border-border px-2 py-1 text-xs">Delete Active View</button>}
           <label className="mb-1 block text-xs text-muted-foreground">Column menu</label>
           <select value={columnMenuMode} onChange={(e) => setColumnMenuMode(e.target.value as ColumnMenuMode)} className="mb-3 w-full rounded border border-border bg-background px-2 py-1.5 text-sm">
             <option value="Default">Default</option>
             <option value="Custom">Custom</option>
-          </select>
-          <label className="mb-1 block text-xs text-muted-foreground">Group By</label>
-          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} className="mb-3 w-full rounded border border-border bg-background px-2 py-1.5 text-sm">
-            <option value="">None</option>
-            {visibleColumns.map((c) => <option key={c} value={c}>{humanizeLabel(c)}</option>)}
           </select>
           <label className="mb-1 block text-xs text-muted-foreground">Page Size</label>
           <select value={String(pageSize)} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }} className="mb-3 w-full rounded border border-border bg-background px-2 py-1.5 text-sm">
@@ -2699,7 +3449,7 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
                       else setHiddenColumns((prev) => (prev.includes(c) ? prev : [...prev, c]))
                     }}
                   />
-                  <span>{c}</span>
+                  <span>{humanizeLabel(c)}</span>
                 </label>
               )
             })}
@@ -3464,8 +4214,12 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
       )}
 
       {detailRow && (
-        <div className="fixed inset-0 z-40 flex justify-end bg-black/40">
-          <div className="h-full w-[420px] overflow-y-auto border-l border-border bg-card p-4">
+        <div
+          ref={drawerRef}
+          style={{ width: drawerWidth }}
+          className="fixed right-0 top-0 z-40 h-full animate-in slide-in-from-right overflow-y-auto border-l border-border bg-card p-4 shadow-2xl duration-200"
+        >
+          <div onMouseDown={startResizeDrawer} className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize bg-border/40 hover:bg-primary/60" title="Drag to resize" />
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold">MDM Details</h3>
               <button onClick={() => setDetailRow(null)} className="rounded border border-border px-2 py-1 text-xs">Close</button>
@@ -3478,6 +4232,14 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
               >
                 {aiAssistLoading ? "AI..." : "AI Assist"}
               </button>
+              {SUBTABLES[entity] && (
+                <button
+                  onClick={() => { const r = detailRow; setDetailRow(null); openRecordView(r) }}
+                  className="rounded border border-primary/40 bg-primary/10 px-2 py-1 text-xs text-primary"
+                >
+                  Open record ▸
+                </button>
+              )}
               {canWrite && (
                 <button
                   onClick={() => { startEditRow(detailRow); setDetailRow(null) }}
@@ -3530,6 +4292,51 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
             </div>
             {detailTab === "overview" && (
               <>
+            <div className="mb-3 rounded border border-border p-2">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-medium">Information</div>
+                <button onClick={() => setDetailViewEditing((v) => !v)} className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted">
+                  {detailViewEditing ? "Done" : "Customize view"}
+                </button>
+              </div>
+              {detailViewEditing ? (
+                <div className="space-y-1">
+                  <div className="text-[10px] text-muted-foreground">Pick the fields to show, then save as your default for {humanizeLabel(entity)}.</div>
+                  <div className="max-h-48 overflow-auto rounded border border-border/60 p-1">
+                    {allDetailFields.map((f) => {
+                      const checked = visibleDetailFields.includes(f)
+                      return (
+                        <label key={f} className="flex items-center gap-2 px-1 py-0.5 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const base = visibleDetailFields
+                              const next = e.target.checked ? [...base, f] : base.filter((x) => x !== f)
+                              setDetailFields(allDetailFields.filter((c) => next.includes(c)))
+                            }}
+                          />
+                          {humanizeLabel(f)}
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={() => saveDetailView(visibleDetailFields)} className="rounded bg-primary px-2 py-1 text-[11px] text-primary-foreground">Save as default</button>
+                    <button onClick={resetDetailView} className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted">Reset</button>
+                  </div>
+                </div>
+              ) : (
+                <dl className="grid grid-cols-[40%_60%] gap-x-2 gap-y-1 text-xs">
+                  {visibleDetailFields.map((f) => (
+                    <div key={f} className="contents">
+                      <dt className="truncate py-0.5 text-muted-foreground">{humanizeLabel(f)}</dt>
+                      <dd className="break-words py-0.5">{f === "status" ? (detailRow[f] ? humanizeLabel(String(detailRow[f])) : "-") : (String(detailRow[f] ?? "") || "-")}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
             <div className="mb-3 rounded border border-border p-2">
               <div className="mb-2 text-xs font-medium">Ask AI</div>
               <div className="mb-2 flex flex-wrap gap-1">
@@ -3647,8 +4454,8 @@ export function MdmContent({ activeItem }: { activeItem: string }) {
               <pre className="whitespace-pre-wrap rounded border border-border bg-muted/20 p-2 text-xs">{JSON.stringify(detailRow, null, 2)}</pre>
             )}
           </div>
-        </div>
       )}
+
     </div>
   )
 }

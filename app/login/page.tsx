@@ -5,7 +5,7 @@ import type React from "react"
 
 export default function LoginPage() {
   return (
-    <main className="grid min-h-svh lg:grid-cols-2">
+    <main className="force-light grid min-h-svh bg-background text-foreground lg:grid-cols-2">
       <div className="flex flex-col justify-center bg-white px-6 py-12 sm:px-12 lg:px-16">
         <LoginForm />
       </div>

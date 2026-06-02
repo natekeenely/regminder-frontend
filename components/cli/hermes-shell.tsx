@@ -34,6 +34,7 @@ export function HermesShell() {
   const [taskPanelOpen, setTaskPanelOpen] = useState(false) // Collapsed by default
   const [viewMode, setViewMode] = useState<ViewMode>("split")
   const [activeItem, setActiveItem] = useState("dashboard")
+  const [mdmDrill, setMdmDrill] = useState<{ column: string; value: string } | null>(null)
   const [chatBubbleOpen, setChatBubbleOpen] = useState(false)
   const [chatBubblePos, setChatBubblePos] = useState({ x: 24, y: 24 })
   const [chatBubbleErrorGlow, setChatBubbleErrorGlow] = useState(false)
@@ -254,7 +255,12 @@ export function HermesShell() {
                 ) : isAiView ? (
                   <AiContent activeItem={activeItem} />
                 ) : isMdmView ? (
-                  <MdmContent activeItem={activeItem} />
+                  <MdmContent
+                    activeItem={activeItem}
+                    drill={mdmDrill}
+                    onNavigate={(itemId, drill) => { setMdmDrill(drill ?? null); setActiveItem(itemId) }}
+                    onDrillConsumed={() => setMdmDrill(null)}
+                  />
                 ) : activeModule === "lims" ? (
                   <LimsContent activeItem={activeItem} />
                 ) : activeModule === "erp" ? (

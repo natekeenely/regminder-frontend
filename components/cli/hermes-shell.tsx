@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
 import { Sidebar } from "@/components/cli/sidebar"
 import { TopBar } from "@/components/cli/top-bar"
 import { AgentChat } from "@/components/cli/agent-chat"
@@ -8,12 +8,29 @@ import { TaskPanel } from "@/components/cli/task-panel"
 import { DashboardContent } from "@/components/cli/dashboard-content"
 import { MdmContent } from "@/components/cli/mdm-content"
 import { AiContent } from "@/components/cli/ai-content"
+import { AiSettingsContent } from "@/components/cli/ai-settings-content"
+import { AiPromptsContent } from "@/components/cli/ai-prompts-content"
+import { AiAgentsContent } from "@/components/cli/ai-agents-content"
+import { AiWorkflowContent } from "@/components/cli/ai-workflow-content"
+import { AiUsageContent } from "@/components/cli/ai-usage-content"
+import { SkillsContent } from "@/components/cli/skills-content"
+import { AiKnowledgeContent } from "@/components/cli/ai-knowledge-content"
+import { AiDataSourceContent } from "@/components/cli/ai-datasource-content"
+import { AiPluginsContent } from "@/components/cli/ai-plugins-content"
+import { AiMemoryContent } from "@/components/cli/ai-memory-content"
 import { IamContent } from "@/components/cli/iam-content"
 import { LimsContent } from "@/components/cli/lims-content"
 import { ErpContent } from "@/components/cli/erp-content"
 import { PmContent } from "@/components/cli/pm-content"
 import { SdContent } from "@/components/cli/sd-content"
+import { SdAdminContent } from "@/components/cli/sd-admin-content"
 import { GmaContent } from "@/components/cli/gma-content"
+import { LocalStorageContent } from "@/components/cli/local-storage-content"
+import { CloudStorageContent } from "@/components/cli/cloud-storage-content"
+import { DocumentEditorContent } from "@/components/cli/document-editor-content"
+import { SpreadsheetEditorContent } from "@/components/cli/spreadsheet-editor-content"
+import { PdfGeneratorContent } from "@/components/cli/pdf-generator-content"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -22,18 +39,28 @@ import {
   Maximize2,
   MessageSquare,
   LayoutDashboard,
-  Sparkles,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type ViewMode = "dashboard" | "agent" | "split"
+type DefaultViewMode = Extract<ViewMode, "dashboard" | "agent">
+
+const DEFAULT_VIEW_MODE_KEY = "hermes.defaultViewMode"
+
+function readDefaultViewMode(): DefaultViewMode {
+  if (typeof window === "undefined") return "dashboard"
+  return window.localStorage.getItem(DEFAULT_VIEW_MODE_KEY) === "agent" ? "agent" : "dashboard"
+}
 
 export function HermesShell() {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readDefaultViewMode() === "agent")
   const [taskPanelOpen, setTaskPanelOpen] = useState(false) // Collapsed by default
-  const [viewMode, setViewMode] = useState<ViewMode>("split")
-  const [activeItem, setActiveItem] = useState("dashboard")
+  const [viewMode, setViewMode] = useState<ViewMode>(readDefaultViewMode)
+  const [activeItem, setActiveItem] = useState(() => {
+    if (typeof window === "undefined") return "dashboard"
+    return new URLSearchParams(window.location.search).get("view") || "dashboard"
+  })
   const [chatBubbleOpen, setChatBubbleOpen] = useState(false)
   const [chatBubblePos, setChatBubblePos] = useState({ x: 24, y: 24 })
   const [chatBubbleErrorGlow, setChatBubbleErrorGlow] = useState(false)
@@ -41,20 +68,65 @@ export function HermesShell() {
   const shellRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; pointerX: number; pointerY: number } | null>(null)
   const dragMovedRef = useRef(false)
+  // Floating bubble avatar: first Dify app with image icon → default
+  const [bubbleAvatar, setBubbleAvatar] = useState("/logos/hermes-avatar.png")
+  useEffect(() => {
+    fetch("/api/proxy/api/v1/dify/apps?limit=10")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.data?.length) return
+        const apps = data.data as Array<{ icon?: string; icon_type?: string }>
+        const withImage = apps.find((a) => a.icon_type === "image" && a.icon)
+        if (withImage?.icon) setBubbleAvatar(`/api/proxy/api/v1/dify/files/${withImage.icon}/preview`)
+      })
+      .catch(() => { /* ignore */ })
+  }, [])
+
   const isDashboardMode = viewMode === "dashboard"
   const isMdmView = activeItem === "mdm" || activeItem.startsWith("mdm-")
+  const isComplianceView = activeItem === "compliance" || activeItem.startsWith("compliance-")
   const isAiView = activeItem === "ai" || activeItem.startsWith("ai-")
   const isIamView = activeItem === "iam" || activeItem.startsWith("iam-")
+  const isLocalStorageView = activeItem === "local"
+  const isCloudStorageView = activeItem === "cloud"
+  const isDocumentEditorView = activeItem === "document-editor"
+  const isSpreadsheetEditorView = activeItem === "spreadsheet-editor"
+  const isPdfGeneratorView = activeItem === "pdf-generator"
 
   // Map sidebar menu items (parent + children) to their module content
   const moduleItemMap: Record<string, "lims" | "erp" | "pm" | "sd" | "gma"> = {
-    lims: "lims", samples: "lims", tests: "lims", equipment: "lims", reports: "lims",
+    lims: "lims", samples: "lims", tests: "lims", equipment: "lims", reports: "lims", "lims-audit": "lims",
     erp: "erp", orders: "erp", quotations: "erp", invoices: "erp", customers: "erp",
     pm: "pm", projects: "pm", tasks: "pm", timeline: "pm", resources: "pm",
-    sd: "sd", tickets: "sd", sla: "sd", kb: "sd",
-    gma: "gma", regulations: "gma", standards: "gma", compliance: "gma",
+    sd: "sd", "sd-tickets": "sd", "sd-sla": "sd", "sd-knowledge": "sd", "sd-ticket-category": "sd",
+    "sd-brands": "sd", "sd-ticket-types": "sd",
+    "sd-priorities": "sd", "sd-tags": "sd", "sd-templates": "sd", "sd-macros": "sd",
+    "sd-worklog-config": "sd", "sd-csat-config": "sd", "sd-email-channels": "sd",
+    "sd-signatures": "sd", "sd-languages": "sd",
+    gma: "gma", regulations: "gma", standards: "gma", "gma-compliance": "gma",
   }
   const activeModule = moduleItemMap[activeItem]
+
+  function navigateToItem(itemId: string): void {
+    setActiveItem(itemId)
+    if (typeof window === "undefined") return
+    const url = new URL(window.location.href)
+    if (itemId === "dashboard") {
+      url.searchParams.delete("view")
+    } else {
+      url.searchParams.set("view", itemId)
+    }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`)
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onPopState = () => {
+      setActiveItem(new URLSearchParams(window.location.search).get("view") || "dashboard")
+    }
+    window.addEventListener("popstate", onPopState)
+    return () => window.removeEventListener("popstate", onPopState)
+  }, [])
 
   useEffect(() => {
     if (!isDashboardMode) {
@@ -160,15 +232,49 @@ export function HermesShell() {
     }
   }, [])
 
+  function renderWorkspaceContent(): ReactNode {
+    if (isSpreadsheetEditorView) return <SpreadsheetEditorContent />
+    if (isDocumentEditorView) return <DocumentEditorContent />
+    if (isPdfGeneratorView) return <PdfGeneratorContent />
+    if (isCloudStorageView) return <CloudStorageContent />
+    if (isLocalStorageView) return <LocalStorageContent />
+    if (isIamView) return <IamContent activeItem={activeItem} />
+    if (activeItem === "ai-settings") return <AiSettingsContent />
+    if (activeItem === "ai-agents") return <AiAgentsContent />
+    if (activeItem === "ai-workflow") return <AiWorkflowContent />
+    if (activeItem === "ai-prompts") return <AiPromptsContent />
+    if (activeItem === "ai-usage") return <AiUsageContent />
+    if (activeItem === "ai-skills") return <SkillsContent />
+    if (activeItem === "ai-knowledge") return <AiKnowledgeContent />
+    if (activeItem === "ai-plugins") return <AiPluginsContent />
+    if (activeItem === "ai-datasource") return <AiDataSourceContent />
+    if (activeItem === "ai-memory") return <AiMemoryContent />
+    if (isAiView) return <AiContent activeItem={activeItem} />
+    if (isComplianceView) return <MdmContent activeItem={activeItem} />
+    if (isMdmView) return <MdmContent activeItem={activeItem} />
+    if (activeModule === "lims") return <LimsContent activeItem={activeItem} />
+    if (activeModule === "erp") return <ErpContent activeItem={activeItem} />
+    if (activeModule === "pm") return <PmContent activeItem={activeItem} />
+    if (activeModule === "sd") {
+      if (activeItem === "sd-ticket-category") return <MdmContent activeItem={activeItem} />
+      if (["sd-brands", "sd-ticket-types", "sd-priorities", "sd-tags", "sd-templates", "sd-macros", "sd-worklog-config", "sd-csat-config", "sd-email-channels", "sd-signatures", "sd-languages"].includes(activeItem)) {
+        return <SdAdminContent activeItem={activeItem} />
+      }
+      return <SdContent activeItem={activeItem} />
+    }
+    if (activeModule === "gma") return <GmaContent activeItem={activeItem} />
+    return <DashboardContent onNavigate={navigateToItem} />
+  }
+
   return (
     <div ref={shellRef} className="flex h-screen flex-col bg-background">
       {/* Top Bar */}
-      <TopBar />
+      <TopBar onNavigate={navigateToItem} />
 
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        {sidebarOpen && <Sidebar activeItem={activeItem} onSelectItem={setActiveItem} />}
+        <Sidebar activeItem={activeItem} onSelectItem={navigateToItem} collapsed={sidebarCollapsed} />
 
         {/* Main Area */}
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -176,11 +282,11 @@ export function HermesShell() {
           <div className="flex items-center justify-between border-b border-border bg-muted/30 px-2 py-1.5">
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setSidebarOpen(!sidebarOpen)}
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
                 className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+                title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
               >
-                {sidebarOpen ? (
+                {!sidebarCollapsed ? (
                   <PanelLeftClose className="h-4 w-4" />
                 ) : (
                   <PanelLeftOpen className="h-4 w-4" />
@@ -189,7 +295,7 @@ export function HermesShell() {
               <div className="mx-2 h-4 w-px bg-border" />
               <div className="flex rounded-md border border-border bg-card p-0.5">
                 <button
-                  onClick={() => setViewMode("dashboard")}
+                  onClick={() => { setViewMode("dashboard"); setSidebarCollapsed(false) }}
                   className={cn(
                     "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
                     viewMode === "dashboard"
@@ -200,20 +306,8 @@ export function HermesShell() {
                   <LayoutDashboard className="h-3 w-3" />
                   Dashboard
                 </button>
-                <button
-                  onClick={() => setViewMode("split")}
-                  className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-                    viewMode === "split"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  <Maximize2 className="h-3 w-3" />
-                  Split View
-                </button>
-                <button
-                  onClick={() => setViewMode("agent")}
+<button
+                  onClick={() => { setViewMode("agent"); setSidebarCollapsed(true) }}
                   className={cn(
                     "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
                     viewMode === "agent"
@@ -243,41 +337,27 @@ export function HermesShell() {
 
           {/* Content Area */}
           <div className="flex flex-1 overflow-hidden">
-            {/* Dashboard View */}
-            {(viewMode === "dashboard" || viewMode === "split") && (
-              <div className={cn(
-                "flex-1 overflow-hidden",
-                viewMode === "split" && "border-r border-border"
-              )}>
-                {isIamView ? (
-                  <IamContent activeItem={activeItem} />
-                ) : isAiView ? (
-                  <AiContent activeItem={activeItem} />
-                ) : isMdmView ? (
-                  <MdmContent activeItem={activeItem} />
-                ) : activeModule === "lims" ? (
-                  <LimsContent activeItem={activeItem} />
-                ) : activeModule === "erp" ? (
-                  <ErpContent activeItem={activeItem} />
-                ) : activeModule === "pm" ? (
-                  <PmContent activeItem={activeItem} />
-                ) : activeModule === "sd" ? (
-                  <SdContent activeItem={activeItem} />
-                ) : activeModule === "gma" ? (
-                  <GmaContent activeItem={activeItem} />
-                ) : (
-                  <DashboardContent />
-                )}
+            {viewMode === "split" ? (
+              <ResizablePanelGroup direction="horizontal" autoSaveId="hermes-shell-split-v1" className="min-w-0">
+                <ResizablePanel defaultSize={70} minSize={45} className="min-w-0">
+                  <div className="h-full overflow-hidden">
+                    {renderWorkspaceContent()}
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel defaultSize={30} minSize={24} maxSize={45} className="min-w-[320px]">
+                  <div className="h-full overflow-hidden">
+                    <AgentChat minimal viewMode={viewMode} activeModule={activeModule} />
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            ) : viewMode === "dashboard" ? (
+              <div className="flex-1 overflow-hidden">
+                {renderWorkspaceContent()}
               </div>
-            )}
-
-            {/* Agent Chat View */}
-            {(viewMode === "agent" || viewMode === "split") && (
-              <div className={cn(
-                "overflow-hidden",
-                viewMode === "split" ? "w-[400px]" : "flex-1"
-              )}>
-                <AgentChat />
+            ) : (
+              <div className="flex-1 overflow-hidden">
+                <AgentChat viewMode={viewMode} activeModule={activeModule} />
               </div>
             )}
 
@@ -291,18 +371,17 @@ export function HermesShell() {
                       top: Math.max(72, chatBubblePos.y - 560 + 44),
                     }}
                   >
-                    <div className="flex items-center justify-between border-b border-border px-3 py-2">
-                      <div className="text-sm font-medium">Hermes Agent</div>
+                    <div className="relative">
                       <button
                         onClick={() => setChatBubbleOpen(false)}
-                        className="rounded border border-border p-1 text-muted-foreground hover:text-foreground"
+                        className="absolute right-2 top-2 z-10 rounded border border-border bg-background/80 p-1 text-muted-foreground hover:text-foreground"
                         title="Close chat"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>
-                    </div>
-                    <div className="h-[520px]">
-                      <AgentChat />
+                      <div className="h-[560px]">
+                        <AgentChat minimal viewMode="dashboard" activeModule={activeModule} />
+                      </div>
                     </div>
                   </div>
                 )}
@@ -316,14 +395,15 @@ export function HermesShell() {
                     }
                   }}
                   className={cn(
-                    `fixed z-50 flex items-center justify-center rounded-full border border-border bg-primary text-primary-foreground shadow-xl transition ${chatBubbleOpen ? "h-11 w-11" : "h-14 w-14"}`,
+                    `fixed z-50 flex items-center justify-center rounded-full border-2 border-primary/30 overflow-hidden shadow-xl transition ${chatBubbleOpen ? "h-11 w-11" : "h-14 w-14"}`,
                     chatBubbleErrorGlow && "animate-pulse ring-4 ring-destructive/40"
                   )}
                   style={{ left: chatBubblePos.x, top: chatBubblePos.y }}
                   title={chatBubbleErrorGlow ? "Issue detected. Click for AI help." : "Open Hermes Agent"}
                   aria-label="Open Hermes Agent"
                 >
-                  <Sparkles className="h-6 w-6" />
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={bubbleAvatar} alt="Hermes" className={`object-cover ${chatBubbleOpen ? "h-11 w-11" : "h-14 w-14"}`} />
                 </button>
               </>
             )}

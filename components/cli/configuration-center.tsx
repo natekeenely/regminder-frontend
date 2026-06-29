@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
+import { useTheme } from "next-themes"
 import {
   ArrowLeft,
   Settings,
@@ -26,6 +27,12 @@ import {
   EyeOff,
   Bot,
   Mail,
+  KeyRound,
+  Loader2,
+  Sun,
+  Moon,
+  HardDrive,
+  Network,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -92,6 +99,7 @@ interface AiProviderConfig {
 interface AiProvidersApiPayload {
   defaultProvider: string
   fallbackOrder: string[]
+  defaultModel?: string
   providers: Array<{
     provider: string
     aiUrl: string
@@ -145,6 +153,11 @@ interface WorkflowRuntimeConfig {
   smtpUser: string
   smtpPass: string
   smtpFrom: string
+  regulationEmbeddingEnabled: boolean
+  regulationEmbeddingUrl: string
+  regulationEmbeddingApiKey: string
+  regulationEmbeddingModel: string
+  regulationEmbeddingBatchSize: string
 }
 
 interface ApprovalPolicyRow {
@@ -354,6 +367,14 @@ const approvalActions = ["create", "update", "delete", "mass-update"] as const
 
 type FormValue = string | boolean
 type ConnectorForm = Record<string, FormValue>
+type DefaultViewMode = "dashboard" | "agent"
+
+const DEFAULT_VIEW_MODE_KEY = "hermes.defaultViewMode"
+
+function readDefaultViewMode(): DefaultViewMode {
+  if (typeof window === "undefined") return "dashboard"
+  return window.localStorage.getItem(DEFAULT_VIEW_MODE_KEY) === "agent" ? "agent" : "dashboard"
+}
 
 const connectorTemplates: Record<string, ConnectorForm> = {
   graph: { enabled: true, tenantId: "", clientId: "", clientSecret: "", scopes: "User.Read Mail.Read", mailbox: "", aiProvider: "", aiUrl: "", aiToken: "", aiModel: "" },
@@ -444,8 +465,9 @@ export function ConfigurationCenter({
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { setTheme } = useTheme()
   const resolveTab = (): string => {
-    const allowed = new Set(["connectors", "dashboard", "output", "ai", "ops"])
+    const allowed = new Set(["profile", "connectors", "dashboard", "output", "ai", "ops"])
     const fromSearch = searchParams.get("tab")
     if (fromSearch && allowed.has(fromSearch)) return fromSearch
     if (typeof window !== "undefined") {
@@ -472,13 +494,165 @@ export function ConfigurationCenter({
   const [activeTab, setActiveTab] = useState(resolveTab)
   const [newAction, setNewAction] = useState("")
   const [saveStatus, setSaveStatus] = useState("idle")
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    return window.localStorage.getItem("hermes.avatar")
+  })
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [displayName, setDisplayName] = useState(() => {
+    if (typeof window === "undefined") return "Demo User"
+    return window.localStorage.getItem("hermes.displayName") ?? "Demo User"
+  })
+  const [appearance, setAppearance] = useState<"light" | "dark" | "system">(() => {
+    if (typeof window === "undefined") return "system"
+    return (window.localStorage.getItem("hermes.appearance") as "light" | "dark" | "system") ?? "system"
+  })
+  const [defaultViewMode, setDefaultViewMode] = useState<DefaultViewMode>(readDefaultViewMode)
+  const [defaultStorageMode, setDefaultStorageMode] = useState<"local" | "intranet">("local")
+  const [defaultStorageFolder, setDefaultStorageFolder] = useState("")
+  const [storageLoading, setStorageLoading] = useState(false)
+  const [storageMessage, setStorageMessage] = useState("")
+
+  function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setAvatarFile(file)
+    const reader = new FileReader()
+    reader.onload = () => setAvatarPreview(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  function saveProfile(): void {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("hermes.displayName", displayName)
+      window.localStorage.setItem("hermes.appearance", appearance)
+      window.localStorage.setItem(DEFAULT_VIEW_MODE_KEY, defaultViewMode)
+      if (avatarPreview) {
+        window.localStorage.setItem("hermes.avatar", avatarPreview)
+      } else {
+        window.localStorage.removeItem("hermes.avatar")
+      }
+      setTheme(appearance)
+    }
+    // Persist default storage folder to backend
+    if (defaultStorageFolder) {
+      void saveDefaultStorageFolder()
+    }
+    setSaveStatus("saved")
+    setTimeout(() => setSaveStatus("idle"), 2000)
+  }
+
+  async function saveDefaultStorageFolder(): Promise<void> {
+    setStorageLoading(true)
+    setStorageMessage("")
+    try {
+      const resp = await fetch("/api/proxy/api/v1/connectors/user/local-storage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          mode: defaultStorageMode,
+          provider: defaultStorageMode === "local" ? "local" : "nas",
+          folder: defaultStorageFolder,
+          displayPath: defaultStorageMode === "local" ? `local:${defaultStorageFolder}` : `nas:${defaultStorageFolder}`,
+          selectedAt: new Date().toISOString(),
+        }),
+      })
+      if (resp.ok) {
+        setStorageMessage("Default folder saved.")
+        window.localStorage.setItem("regminder-local-storage-selection", JSON.stringify({ mode: defaultStorageMode, folder: defaultStorageMode === "local" ? `local:${defaultStorageFolder}` : `nas:${defaultStorageFolder}` }))
+      } else {
+        setStorageMessage("Failed to save.")
+      }
+    } catch {
+      setStorageMessage("Backend unreachable — saved locally.")
+      window.localStorage.setItem("regminder-local-storage-selection", JSON.stringify({ mode: defaultStorageMode, folder: defaultStorageMode === "local" ? `local:${defaultStorageFolder}` : `nas:${defaultStorageFolder}` }))
+    }
+    setStorageLoading(false)
+    setTimeout(() => setStorageMessage(""), 3000)
+  }
+
+  // Load saved storage default on mount
+  useEffect(() => {
+    async function load() {
+      try {
+        const resp = await fetch("/api/proxy/api/v1/connectors/user/local-storage")
+        if (resp.ok) {
+          const data = await resp.json() as { setting?: { mode?: string; folder?: string; displayPath?: string } }
+          if (data.setting?.mode) setDefaultStorageMode(data.setting.mode as "local" | "intranet")
+          if (data.setting?.folder) setDefaultStorageFolder(data.setting.folder)
+        }
+      } catch { /* ignore */ }
+    }
+    void load()
+  }, [])
+
+  const [resetPwCurrent, setResetPwCurrent] = useState("")
+  const [resetPwNew, setResetPwNew] = useState("")
+  const [resetPwConfirm, setResetPwConfirm] = useState("")
+  const [resetPwStatus, setResetPwStatus] = useState<"idle" | "sending" | "ok" | "error">("idle")
+  const [resetPwMessage, setResetPwMessage] = useState("")
+
+  async function handleResetPassword(): Promise<void> {
+    setResetPwMessage("")
+    if (!resetPwCurrent) {
+      setResetPwMessage("Current password is required.")
+      setResetPwStatus("error")
+      return
+    }
+    if (!resetPwNew || resetPwNew.length < 6) {
+      setResetPwMessage("New password must be at least 6 characters.")
+      setResetPwStatus("error")
+      return
+    }
+    if (resetPwNew !== resetPwConfirm) {
+      setResetPwMessage("Passwords do not match.")
+      setResetPwStatus("error")
+      return
+    }
+    if (resetPwCurrent === resetPwNew) {
+      setResetPwMessage("New password must be different from the current password.")
+      setResetPwStatus("error")
+      return
+    }
+    setResetPwStatus("sending")
+    try {
+      const resp = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ currentPassword: resetPwCurrent, newPassword: resetPwNew }),
+      })
+      const data = await resp.json()
+      if (!resp.ok || !data?.ok) {
+        setResetPwMessage(String(data?.detail ?? "Password reset failed."))
+        setResetPwStatus("error")
+        return
+      }
+      setResetPwMessage(data?.detail ?? "Password updated successfully.")
+      setResetPwStatus("ok")
+      setResetPwCurrent("")
+      setResetPwNew("")
+      setResetPwConfirm("")
+      setTimeout(() => {
+        setResetPwStatus("idle")
+        setResetPwMessage("")
+      }, 3000)
+    } catch {
+      setResetPwMessage("Network error. Please try again.")
+      setResetPwStatus("error")
+    }
+  }
+
   const [adminAiProviders, setAdminAiProviders] = useState<AiProviderConfig[]>([
     { id: "ai-1", provider: "openai", aiUrl: "", aiToken: "", aiModel: "" },
   ])
   const [aiDefaultProvider, setAiDefaultProvider] = useState("openai")
   const [aiFallbackOrder, setAiFallbackOrder] = useState("anthropic")
+  const [aiDefaultModel, setAiDefaultModel] = useState("gpt-4o-mini")
   const [showAiSecrets, setShowAiSecrets] = useState(false)
   const [aiSaveStatus, setAiSaveStatus] = useState("idle")
+  const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle")
+  const [aiTestMessage, setAiTestMessage] = useState("")
   const [notifScope, setNotifScope] = useState<"user" | "tenant">("tenant")
   const [notifProvider, setNotifProvider] = useState<"all" | "teams" | "lark" | "wecom">("all")
   const [notifStatus, setNotifStatus] = useState<"all" | "ok" | "failed">("all")
@@ -504,9 +678,15 @@ export function ConfigurationCenter({
     smtpUser: "",
     smtpPass: "",
     smtpFrom: "",
+    regulationEmbeddingEnabled: false,
+    regulationEmbeddingUrl: "",
+    regulationEmbeddingApiKey: "",
+    regulationEmbeddingModel: "",
+    regulationEmbeddingBatchSize: "64",
   })
   const [workflowRuntimeSaveStatus, setWorkflowRuntimeSaveStatus] = useState("idle")
   const [workflowRuntimeTestStatus, setWorkflowRuntimeTestStatus] = useState("idle")
+  const [regulationEmbeddingTestStatus, setRegulationEmbeddingTestStatus] = useState("idle")
   const [workflowRuntimeBatchStatus, setWorkflowRuntimeBatchStatus] = useState("idle")
   const [workflowRuntimeCopyStatus, setWorkflowRuntimeCopyStatus] = useState("idle")
   const [approvalPolicies, setApprovalPolicies] = useState<ApprovalPolicyRow[]>([])
@@ -716,6 +896,7 @@ export function ConfigurationCenter({
           ...prev,
           ...item,
           smtpPort: String(item.smtpPort ?? prev.smtpPort),
+          regulationEmbeddingBatchSize: String(item.regulationEmbeddingBatchSize ?? prev.regulationEmbeddingBatchSize),
         }))
       }
       const kpis = await api("/api/v1/mdm-workflow/approval-kpis?days=7") as { ok?: boolean; summary?: ApprovalKpiSummary; trend?: ApprovalKpiTrendRow[] }
@@ -946,6 +1127,25 @@ export function ConfigurationCenter({
     }
   }
 
+  async function testRegulationEmbeddingConfig(): Promise<void> {
+    setRegulationEmbeddingTestStatus("testing")
+    try {
+      await saveWorkflowRuntime()
+      const resp = await fetch("/api/proxy/api/v1/mdm-workflow/regulation-embedding-config/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-role": "admin" },
+        body: JSON.stringify({ role: "admin" }),
+      })
+      const data = await resp.json()
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail ?? "Embedding test failed")
+      setRegulationEmbeddingTestStatus(`ok:${data.dimensions ?? "ready"} dims`)
+      setTimeout(() => setRegulationEmbeddingTestStatus("idle"), 2200)
+    } catch (error) {
+      setRegulationEmbeddingTestStatus("failed")
+      setTimeout(() => setRegulationEmbeddingTestStatus("idle"), 2600)
+    }
+  }
+
   function buildRuntimeTestCurl(provider: "teams" | "lark" | "wecom" | "mail"): string {
     return [
       "curl -X POST http://localhost:18089/api/v1/mdm-workflow/runtime-config/test \\",
@@ -1147,20 +1347,32 @@ export function ConfigurationCenter({
     void data
   }
 
-  async function loadAiProviders(): Promise<void> {
-    const data = (await api("/api/v1/ai/providers")) as AiProvidersApiPayload
-    const rows = Array.isArray(data.providers) ? data.providers : []
-    if (rows.length === 0) {
-      const defaults = [{ id: "ai-1", provider: "openai", aiUrl: "", aiToken: "", aiModel: "" }]
-      setAdminAiProviders(defaults)
-      setLoadedAdminAiProviders(defaults)
-      setAiDefaultProvider("openai")
-      setLoadedAiDefaultProvider("openai")
-      setAiFallbackOrder("anthropic")
-      setLoadedAiFallbackOrder("anthropic")
-      return
+  const AI_PROVIDERS_LOCAL_KEY = "hermes.aiProviders"
+
+  function writeAiToLocal(payload: AiProvidersApiPayload): void {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(AI_PROVIDERS_LOCAL_KEY, JSON.stringify(payload))
+    } catch {
+      // localStorage full or disabled — ignore
     }
-    const mapped = rows.map((p, i) => ({
+  }
+
+  function readAiFromLocal(): AiProvidersApiPayload | null {
+    if (typeof window === "undefined") return null
+    try {
+      const raw = window.localStorage.getItem(AI_PROVIDERS_LOCAL_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as AiProvidersApiPayload
+      if (!Array.isArray(parsed.providers) || parsed.providers.length === 0) return null
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  function applyAiConfig(cfg: AiProvidersApiPayload): void {
+    const mapped = cfg.providers.map((p, i) => ({
       id: `ai-${i + 1}`,
       provider: String(p.provider ?? "openai"),
       aiUrl: String(p.aiUrl ?? ""),
@@ -1169,35 +1381,155 @@ export function ConfigurationCenter({
     }))
     setAdminAiProviders(mapped)
     setLoadedAdminAiProviders(mapped)
-    setAiDefaultProvider(String(data.defaultProvider ?? mapped[0]?.provider ?? "openai"))
-    setLoadedAiDefaultProvider(String(data.defaultProvider ?? mapped[0]?.provider ?? "openai"))
-    const fallback = Array.isArray(data.fallbackOrder) ? data.fallbackOrder.join(",") : ""
-    setAiFallbackOrder(fallback)
-    setLoadedAiFallbackOrder(fallback)
+    setAiDefaultProvider(String(cfg.defaultProvider ?? mapped[0]?.provider ?? "openai"))
+    setLoadedAiDefaultProvider(String(cfg.defaultProvider ?? mapped[0]?.provider ?? "openai"))
+    setAiFallbackOrder(Array.isArray(cfg.fallbackOrder) ? cfg.fallbackOrder.join(",") : "")
+    setLoadedAiFallbackOrder(Array.isArray(cfg.fallbackOrder) ? cfg.fallbackOrder.join(",") : "")
+    const firstModel = mapped.find((p) => p.aiModel.trim())?.aiModel.trim() ?? ""
+    setAiDefaultModel((cfg.defaultModel ?? firstModel).trim() || firstModel)
+  }
+
+  function restoreAiFromLocal(): boolean {
+    const parsed = readAiFromLocal()
+    if (!parsed) return false
+    applyAiConfig(parsed)
+    return true
+  }
+
+  async function loadAiProviders(): Promise<void> {
+    // localStorage is the source of truth — restore it first and use it
+    const hasLocal = restoreAiFromLocal()
+    if (hasLocal) {
+      // Already restored from localStorage (source of truth).
+      // Push local config to backend in background.
+      void syncAiToBackend()
+      return
+    }
+
+    // No localStorage — try backend, fall back to defaults
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 4000)
+      const resp = await fetch("/api/proxy/api/v1/ai/providers", { signal: controller.signal })
+      clearTimeout(timeout)
+      const data = (await resp.json().catch(() => ({ raw: "parse error" }))) as AiProvidersApiPayload & { raw?: string }
+
+      if (data.raw || !Array.isArray(data.providers) || data.providers.length === 0) {
+        setDefaultAiProviders()
+        return
+      }
+
+      applyAiConfig(data)
+      writeAiToLocal(data)
+    } catch {
+      setDefaultAiProviders()
+    }
+  }
+
+  // Push local AI config to backend in the background (fire-and-forget).
+  // NEVER pull backend → localStorage here — local is source of truth.
+  async function syncAiToBackend(): Promise<void> {
+    const local = readAiFromLocal()
+    if (!local) return
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
+      await fetch("/api/proxy/api/v1/ai/providers", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(local),
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+    } catch {
+      // Backend unreachable — ignore, localStorage is source of truth
+    }
+  }
+
+  function setDefaultAiProviders(): void {
+    const defaults = [{ id: "ai-1", provider: "openai", aiUrl: "", aiToken: "", aiModel: "gpt-4o-mini" }]
+    setAdminAiProviders(defaults)
+    setLoadedAdminAiProviders(defaults)
+    setAiDefaultProvider("openai")
+    setLoadedAiDefaultProvider("openai")
+    setAiFallbackOrder("")
+    setAiDefaultModel("gpt-4o-mini")
+    setLoadedAiFallbackOrder("")
   }
 
   async function saveAiProviders(): Promise<void> {
     setAiSaveStatus("saving")
+
+    // Fill empty per-provider models with the default model
+    const defaultModel = aiDefaultModel.trim() || "gpt-4o-mini"
+    const providers = adminAiProviders.map((p) => ({
+      provider: p.provider.trim(),
+      aiUrl: p.aiUrl.trim(),
+      aiToken: p.aiToken,
+      aiModel: p.aiModel.trim() || defaultModel,
+      enabled: true,
+    }))
+
     const payload: AiProvidersApiPayload = {
       defaultProvider: aiDefaultProvider.trim(),
       fallbackOrder: aiFallbackOrder.split(",").map((v) => v.trim()).filter(Boolean),
-      providers: adminAiProviders.map((p) => ({
-        provider: p.provider.trim(),
-        aiUrl: p.aiUrl.trim(),
-        aiToken: p.aiToken,
-        aiModel: p.aiModel.trim(),
-        enabled: true,
-      })),
+      defaultModel: defaultModel,
+      providers,
     }
-    const data = await api("/api/v1/ai/providers", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-    void data
-    await loadAiProviders()
+
+    // Save to localStorage — writes the exact payload we just built
+    writeAiToLocal(payload)
+    setLoadedAdminAiProviders(adminAiProviders)
+    setLoadedAiDefaultProvider(aiDefaultProvider)
+    setLoadedAiFallbackOrder(aiFallbackOrder)
     setAiSaveStatus("saved")
     setTimeout(() => setAiSaveStatus("idle"), 2000)
+
+    // Try backend in background (fire-and-forget, don't block the user)
+    void (async () => {
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5000)
+        const resp = await fetch("/api/proxy/api/v1/ai/providers", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+        const data = (await resp.json().catch(() => ({ raw: "parse error" }))) as { ok?: boolean; detail?: string }
+        if (!data.ok) {
+          console.log("Backend AI save skipped:", data.detail ?? "backend returned not-ok")
+        }
+      } catch {
+        // Backend unreachable — settings are already in localStorage, nothing to do
+      }
+    })()
+  }
+
+  async function testAiConnection(): Promise<void> {
+    setAiTestStatus("testing")
+    setAiTestMessage("")
+    try {
+      // Save first to ensure latest config is tested
+      await saveAiProviders()
+      const resp = await fetch("/api/proxy/api/v1/ai/ping")
+      const data = (await resp.json()) as { ok: boolean; configured: number; defaultProvider: string }
+      if (data.ok && data.configured > 0) {
+        setAiTestMessage(`${data.configured} provider(s) configured. Default: ${data.defaultProvider || "none"}.`)
+        setAiTestStatus("ok")
+      } else {
+        setAiTestMessage("No AI providers configured. Add at least one provider above.")
+        setAiTestStatus("error")
+      }
+    } catch {
+      setAiTestMessage("Failed to reach AI configuration service.")
+      setAiTestStatus("error")
+    }
+    setTimeout(() => {
+      setAiTestStatus("idle")
+      setAiTestMessage("")
+    }, 4000)
   }
 
   async function saveAllChanges(): Promise<void> {
@@ -1332,6 +1664,40 @@ export function ConfigurationCenter({
     setAdminAiProviders((prev) => (prev.length === 1 ? prev : prev.filter((row) => row.id !== id)))
   }
 
+  // Auto-persist AI provider changes to localStorage so removals / edits survive refresh.
+  // Also auto-reset default model when it no longer matches any configured provider row.
+  const aiInitialLoadDone = useRef(false)
+  useEffect(() => {
+    // Skip the very first render (initial state before loadAiProviders runs)
+    if (!aiInitialLoadDone.current) {
+      aiInitialLoadDone.current = true
+      return
+    }
+
+    // Auto-reset default model if it doesn't match any configured provider's model
+    const configuredModels = adminAiProviders.map((p) => p.aiModel.trim()).filter(Boolean)
+    if (configuredModels.length > 0 && !configuredModels.includes(aiDefaultModel.trim())) {
+      setAiDefaultModel(configuredModels[0])
+      return // will re-trigger this effect with the corrected model
+    }
+
+    const payload: AiProvidersApiPayload = {
+      defaultProvider: adminAiProviders[0]?.provider.trim() ?? "openai",
+      fallbackOrder: adminAiProviders.map((p) => p.provider.trim()).filter(Boolean),
+      defaultModel: aiDefaultModel.trim() || configuredModels[0] || "",
+      providers: adminAiProviders.map((p) => ({
+        provider: p.provider.trim(),
+        aiUrl: p.aiUrl.trim(),
+        aiToken: p.aiToken,
+        aiModel: p.aiModel.trim(),
+        enabled: true,
+      })),
+    }
+    writeAiToLocal(payload)
+    // Also push to backend in background
+    void syncAiToBackend()
+  }, [adminAiProviders, aiDefaultModel, aiDefaultProvider, aiFallbackOrder])
+
   function applyAiSetupToAdminConnector(): void {
     if (adminAiProviders.length === 0) return
     const first = adminAiProviders[0]
@@ -1350,9 +1716,15 @@ export function ConfigurationCenter({
       {/* Header */}
       <header className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="flex h-14 items-center justify-between px-6">
-          <div className="flex items-center gap-4">
+          <div />
+
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="gap-1 border-primary/30 text-primary">
+              <Sparkles className="h-3 w-3" />
+              Pro Plan
+            </Badge>
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               onClick={() => {
                 if (onBack) {
@@ -1366,23 +1738,6 @@ export function ConfigurationCenter({
               <ArrowLeft className="h-4 w-4" />
               Back to Dashboard
             </Button>
-            <div className="h-4 w-px bg-border" />
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-                <Settings className="h-4 w-4 text-primary" />
-              </div>
-              <div>
-                <h1 className="text-sm font-semibold text-foreground">Configuration Center</h1>
-                <p className="text-[10px] text-muted-foreground">Customize your workspace · tab: {activeTab}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="gap-1 border-primary/30 text-primary">
-              <Sparkles className="h-3 w-3" />
-              Pro Plan
-            </Badge>
             <Button variant="outline" size="sm" className="gap-2 transition-colors hover:bg-primary/5 hover:text-primary hover:border-primary/50" onClick={resetToLoaded}>
               <RotateCcw className="h-3.5 w-3.5" />
               Reset
@@ -1404,6 +1759,10 @@ export function ConfigurationCenter({
       <main className="mx-auto max-w-7xl p-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="bg-muted/50">
+            <TabsTrigger value="profile" className="gap-2">
+              <UserCircle className="h-4 w-4" />
+              Profile
+            </TabsTrigger>
             <TabsTrigger value="dashboard" className="gap-2">
               <LayoutGrid className="h-4 w-4" />
               Dashboard
@@ -1411,10 +1770,6 @@ export function ConfigurationCenter({
             <TabsTrigger value="connectors" className="gap-2">
               <Plug className="h-4 w-4" />
               Connectors
-            </TabsTrigger>
-            <TabsTrigger value="ai" className="gap-2">
-              <Bot className="h-4 w-4" />
-              AI Setup
             </TabsTrigger>
             <TabsTrigger value="output" className="gap-2">
               <Terminal className="h-4 w-4" />
@@ -1425,6 +1780,301 @@ export function ConfigurationCenter({
               Ops
             </TabsTrigger>
           </TabsList>
+
+          {/* Profile Tab */}
+          <TabsContent value="profile" className="space-y-6">
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Avatar & Basic Info */}
+              <Card className="overflow-hidden">
+                <CardHeader className="border-b border-border bg-muted/30">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <UserCircle className="h-4 w-4 text-primary" />
+                    Profile Picture
+                  </CardTitle>
+                  <CardDescription>Upload a photo or avatar image</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-center gap-4 p-6">
+                  <div className="relative">
+                    <div className="flex h-24 w-24 items-center justify-center rounded-full bg-primary/10 text-primary ring-4 ring-border">
+                      {avatarPreview ? (
+                        <img src={avatarPreview} alt="Avatar" className="h-24 w-24 rounded-full object-cover" />
+                      ) : (
+                        <UserCircle className="h-12 w-12" />
+                      )}
+                    </div>
+                    <label className="absolute -bottom-1 -right-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition-colors hover:bg-primary/90">
+                      <Plus className="h-4 w-4" />
+                      <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
+                    </label>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-foreground">{displayName}</p>
+                    <p className="text-xs text-muted-foreground">Click + to change photo</p>
+                  </div>
+                  {avatarPreview && (
+                    <Button variant="outline" size="sm" onClick={() => { setAvatarPreview(null); setAvatarFile(null) }} className="text-xs">
+                      Remove Photo
+                    </Button>
+                  )}
+
+                  <div className="w-full border-t border-border" />
+
+                  {/* Default Theme — Visual Cards */}
+                  <div className="w-full">
+                    <label className="mb-2 block text-xs font-medium text-foreground">Default Theme</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {/* Light */}
+                      <button
+                        type="button"
+                        onClick={() => setAppearance("light")}
+                        className={`flex flex-col items-center gap-1.5 rounded-lg border-2 p-2 transition-all ${
+                          appearance === "light"
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border bg-card hover:border-muted-foreground/30 hover:bg-muted/30"
+                        }`}
+                      >
+                        <div className="flex h-10 w-full items-center justify-center rounded-md bg-white ring-1 ring-border">
+                          <Sun className="h-5 w-5 text-amber-500" />
+                        </div>
+                        <span className="text-[11px] font-medium text-foreground">Light</span>
+                      </button>
+
+                      {/* Dark */}
+                      <button
+                        type="button"
+                        onClick={() => setAppearance("dark")}
+                        className={`flex flex-col items-center gap-1.5 rounded-lg border-2 p-2 transition-all ${
+                          appearance === "dark"
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border bg-card hover:border-muted-foreground/30 hover:bg-muted/30"
+                        }`}
+                      >
+                        <div className="flex h-10 w-full items-center justify-center rounded-md bg-zinc-900 ring-1 ring-zinc-700">
+                          <Moon className="h-5 w-5 text-indigo-400" />
+                        </div>
+                        <span className="text-[11px] font-medium text-foreground">Dark</span>
+                      </button>
+
+                      {/* System */}
+                      <button
+                        type="button"
+                        onClick={() => setAppearance("system")}
+                        className={`flex flex-col items-center gap-1.5 rounded-lg border-2 p-2 transition-all ${
+                          appearance === "system"
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border bg-card hover:border-muted-foreground/30 hover:bg-muted/30"
+                        }`}
+                      >
+                        <div className="flex h-10 w-full items-center justify-center rounded-md overflow-hidden ring-1 ring-border">
+                          <div className="flex h-full w-1/2 items-center justify-center bg-white">
+                            <Sun className="h-4 w-4 text-amber-500" />
+                          </div>
+                          <div className="flex h-full w-1/2 items-center justify-center bg-zinc-900">
+                            <Moon className="h-4 w-4 text-indigo-400" />
+                          </div>
+                        </div>
+                        <span className="text-[11px] font-medium text-foreground">System</span>
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">Choose your preferred color scheme</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* User Settings + Reset Password */}
+              <Card className="overflow-hidden">
+                <CardHeader className="border-b border-border bg-muted/30">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Settings className="h-4 w-4 text-primary" />
+                    User Settings
+                  </CardTitle>
+                  <CardDescription>Update your display name and password</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 p-6">
+                  {/* Display Name */}
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-foreground">Display Name</label>
+                    <Input
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      placeholder="Your display name"
+                      className="h-9 text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-foreground">Default Landing View</label>
+                    <div className="flex items-center justify-between rounded-md border border-border bg-muted/20 px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => setDefaultViewMode("dashboard")}
+                        className={cn(
+                          "flex items-center gap-2 text-xs font-medium transition-colors",
+                          defaultViewMode === "dashboard" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <LayoutGrid className="h-3.5 w-3.5" />
+                        Dashboard View
+                      </button>
+                      <Switch
+                        checked={defaultViewMode === "agent"}
+                        onCheckedChange={(checked) => setDefaultViewMode(checked ? "agent" : "dashboard")}
+                        aria-label="Use Agent View by default"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDefaultViewMode("agent")}
+                        className={cn(
+                          "flex items-center gap-2 text-xs font-medium transition-colors",
+                          defaultViewMode === "agent" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <Bot className="h-3.5 w-3.5" />
+                        Agent View
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">Choose which workspace opens first after sign-in.</p>
+                  </div>
+
+                  <div className="my-2 border-t border-border" />
+
+                  {/* Default Storage Folder */}
+                  <div>
+                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground">
+                      <HardDrive className="h-3.5 w-3.5 text-primary" />
+                      Default Storage Folder
+                    </label>
+                    <p className="mb-3 text-[10px] text-muted-foreground">Auto-open this folder when entering Local Storage</p>
+                  </div>
+
+                  <div className="flex items-center gap-2 mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setDefaultStorageMode("local")}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium border transition-colors",
+                        defaultStorageMode === "local" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"
+                      )}
+                    >
+                      <HardDrive className="h-3.5 w-3.5" />
+                      Local
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDefaultStorageMode("intranet")}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium border transition-colors",
+                        defaultStorageMode === "intranet" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"
+                      )}
+                    >
+                      <Network className="h-3.5 w-3.5" />
+                      Intranet (NAS)
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={defaultStorageFolder}
+                      onChange={(e) => setDefaultStorageFolder(e.target.value)}
+                      placeholder={defaultStorageMode === "local" ? "e.g. /home/user/projects" : "e.g. /shared/docs"}
+                      className="h-9 text-sm flex-1"
+                    />
+                    <Button size="sm" variant="outline" onClick={() => { void saveDefaultStorageFolder() }} disabled={storageLoading} className="gap-1.5">
+                      {storageLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                      Save
+                    </Button>
+                  </div>
+                  {storageMessage && (
+                    <p className={cn("mt-1.5 text-[10px]", storageMessage.includes("Failed") || storageMessage.includes("unreachable") ? "text-destructive" : "text-green-600")}>
+                      {storageMessage}
+                    </p>
+                  )}
+
+                  <div className="my-2 border-t border-border" />
+
+                  {/* Reset Password Section */}
+                  <div>
+                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground">
+                      <KeyRound className="h-3.5 w-3.5 text-primary" />
+                      Reset Password
+                    </label>
+                    <p className="mb-3 text-[10px] text-muted-foreground">Change your account password</p>
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-foreground">Current Password</label>
+                    <Input
+                      type="password"
+                      value={resetPwCurrent}
+                      onChange={(e) => setResetPwCurrent(e.target.value)}
+                      placeholder="Enter current password"
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-foreground">New Password</label>
+                    <Input
+                      type="password"
+                      value={resetPwNew}
+                      onChange={(e) => setResetPwNew(e.target.value)}
+                      placeholder="Min. 6 characters"
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-foreground">Confirm New Password</label>
+                    <Input
+                      type="password"
+                      value={resetPwConfirm}
+                      onChange={(e) => setResetPwConfirm(e.target.value)}
+                      placeholder="Re-enter new password"
+                      className="h-9 text-sm"
+                    />
+                  </div>
+
+                  {resetPwMessage && (
+                    <div
+                      className={`rounded border px-3 py-2 text-xs ${
+                        resetPwStatus === "ok"
+                          ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+                          : resetPwStatus === "error"
+                            ? "border-destructive/30 bg-destructive/10 text-destructive"
+                            : "border-border bg-muted/30 text-muted-foreground"
+                      }`}
+                    >
+                      {resetPwMessage}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleResetPassword()}
+                      disabled={resetPwStatus === "sending"}
+                      className="flex-1 gap-2"
+                    >
+                      {resetPwStatus === "sending" ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Updating...
+                        </>
+                      ) : (
+                        <>
+                          <KeyRound className="h-3.5 w-3.5" />
+                          Update Password
+                        </>
+                      )}
+                    </Button>
+                    <Button size="sm" onClick={saveProfile} className="flex-1 gap-2">
+                      <Save className="h-3.5 w-3.5" />
+                      Save Profile
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
 
           {/* Dashboard Tab */}
           <TabsContent value="dashboard" className="space-y-6">
@@ -1933,77 +2583,7 @@ export function ConfigurationCenter({
             </Card>
           </TabsContent>
 
-          <TabsContent value="ai" className="space-y-6">
-            <Card className="overflow-hidden">
-              <CardHeader className="border-b border-border bg-muted/30">
-                <CardTitle className="text-base">Admin AI Setup</CardTitle>
-                <CardDescription>Admin-only multi-provider AI configuration</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4 p-4">
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div>
-                    <label className="text-xs text-muted-foreground">Default Provider</label>
-                    <Select value={aiDefaultProvider} onValueChange={setAiDefaultProvider}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {adminAiProviders.map((row) => (
-                          <SelectItem key={`default-${row.id}`} value={row.provider}>
-                            {row.provider}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">Fallback Order (comma-separated)</label>
-                    <Input
-                      placeholder="anthropic,google-gemini"
-                      value={aiFallbackOrder}
-                      onChange={(e) => setAiFallbackOrder(e.target.value)}
-                    />
-                  </div>
-                </div>
-                {adminAiProviders.map((row) => (
-                  <div key={row.id} className="rounded-lg border border-border p-3">
-                    <div className="mb-2 flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">Provider Row</span>
-                      <Button variant="ghost" size="sm" onClick={() => removeAdminAiProvider(row.id)} disabled={adminAiProviders.length === 1}>
-                        Remove
-                      </Button>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <Select value={row.provider} onValueChange={(v) => updateAdminAiProvider(row.id, { provider: v })}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {aiProviderOptions.map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                              <div className="flex items-center gap-2">
-                                <BrandMark label={opt.label} logo={opt.logo} icon={<Bot className="h-4 w-4" />} forceLightBg />
-                                {opt.label}
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Input placeholder="AI URL" value={row.aiUrl} onChange={(e) => updateAdminAiProvider(row.id, { aiUrl: e.target.value })} />
-                      <Input type={showAiSecrets ? "text" : "password"} placeholder="AI Token" value={row.aiToken} onChange={(e) => updateAdminAiProvider(row.id, { aiToken: e.target.value })} />
-                      <Input placeholder="AI Model" value={row.aiModel} onChange={(e) => updateAdminAiProvider(row.id, { aiModel: e.target.value })} />
-                    </div>
-                  </div>
-                ))}
-                <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => setShowAiSecrets((v) => !v)} className="transition-colors hover:bg-primary/5 hover:text-primary hover:border-primary/50">{showAiSecrets ? "Hide Tokens" : "Show Tokens"}</Button>
-                  <Button variant="outline" onClick={addAdminAiProvider} className="transition-colors hover:bg-primary/5 hover:text-primary hover:border-primary/50">Add Provider</Button>
-                  <Button onClick={applyAiSetupToAdminConnector}>Apply To Current Admin Connector</Button>
-                  <Button variant="outline" onClick={() => void loadAiProviders()} className="transition-colors hover:bg-primary/5 hover:text-primary hover:border-primary/50">Reload</Button>
-                  <Button onClick={() => void saveAiProviders()}>{aiSaveStatus === "saving" ? "Saving..." : "Save AI Providers"}</Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  User AI setup is disabled by policy. Runtime uses this admin provider list with default + fallback strategy.
-                </p>
-              </CardContent>
-            </Card>
-          </TabsContent>
+          {/* AI Setup tab removed — now lives at AI > Settings & Providers in the sidebar */}
 
           {/* API Output Tab */}
           <TabsContent value="output">

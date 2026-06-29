@@ -4,8 +4,9 @@ import { LoginForm } from "@/components/login-form"
 import type React from "react"
 
 export default function LoginPage() {
+  // .force-light pins the page to the light palette even when the app theme is dark.
   return (
-    <main className="grid min-h-svh lg:grid-cols-2">
+    <main className="force-light grid min-h-svh lg:grid-cols-2">
       <div className="flex flex-col justify-center bg-white px-6 py-12 sm:px-12 lg:px-16">
         <LoginForm />
       </div>
@@ -21,7 +22,7 @@ export default function LoginPage() {
         <div className="absolute inset-0 bg-gradient-to-t from-primary via-primary/85 to-primary/55" />
         <div className="relative flex h-full flex-col justify-between p-12 text-primary-foreground">
           <div className="inline-flex w-fit items-center gap-2 rounded-full border border-primary-foreground/20 bg-primary-foreground/10 px-3 py-1.5 text-xs font-medium backdrop-blur">
-            <span className="h-2 w-2 rounded-full bg-emerald-300" />
+            <span className="h-2 w-2 rounded-full bg-primary-foreground/80" />
             ISO/IEC 17025 Accredited
           </div>
           <div className="max-w-md">
@@ -45,7 +46,7 @@ export default function LoginPage() {
 function Feature({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
   return (
     <li className="flex items-center gap-3">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-foreground/10 text-emerald-300">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-foreground/10 text-primary-foreground/80">
         {icon}
       </span>
       <span className="text-sm text-primary-foreground/90">{children}</span>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import {
   Scale,
   Globe,
@@ -11,7 +11,6 @@ import {
   Clock,
   TrendingUp,
   Plus,
-  Search,
   Filter,
   MoreVertical,
   Eye,
@@ -21,6 +20,9 @@ import {
   MapPin,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { ColumnFilterPopover } from "@/components/ui/column-filter-popover"
+import { WorkbenchCard } from "@/components/ui/workbench-card"
+import { QueryBuilder, QBField, QBGroup, createDefaultQuery } from "@/components/ui/query-builder"
 
 interface Regulation {
   id: string
@@ -69,7 +71,7 @@ const getStatusColor = (status: string) => {
   switch (status) {
     case "active":
     case "compliant":
-      return "bg-green-100 text-green-700"
+      return "bg-blue-100 text-blue-700"
     case "pending":
     case "pending-review":
       return "bg-amber-100 text-amber-700"
@@ -84,7 +86,7 @@ const getStatusColor = (status: string) => {
 }
 
 const getComplianceColor = (rate: number) => {
-  if (rate >= 95) return "bg-green-500"
+  if (rate >= 95) return "bg-blue-500"
   if (rate >= 80) return "bg-amber-500"
   return "bg-red-500"
 }
@@ -92,9 +94,119 @@ const getComplianceColor = (rate: number) => {
 export function GmaContent({ activeItem }: { activeItem?: string }) {
   const [activeTab, setActiveTab] = useState<"regulations" | "compliance" | "countries">("regulations")
   const [searchQuery, setSearchQuery] = useState("")
+  const [showLeftPanel, setShowLeftPanel] = useState(false)
+  const [queryGroup, setQueryGroup] = useState<QBGroup>(() => createDefaultQuery([]))
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({})
+  const [filterMenuColumn, setFilterMenuColumn] = useState<string | null>(null)
+
+  useEffect(() => {
+    setShowLeftPanel(false)
+  }, [activeTab])
+
+  const filteredRegulations = useMemo(() => {
+    return mockRegulations.filter((reg) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase()
+        const matchesSearch = reg.id.toLowerCase().includes(q) ||
+          reg.name.toLowerCase().includes(q) ||
+          reg.region.toLowerCase().includes(q) ||
+          reg.category.toLowerCase().includes(q) ||
+          reg.status.toLowerCase().includes(q)
+        if (!matchesSearch) return false
+      }
+      return Object.entries(columnFilters).every(([key, filterValue]) => {
+        if (!filterValue) return true
+        const v = filterValue.toLowerCase()
+        switch (key) {
+          case "id": return reg.id.toLowerCase().includes(v)
+          case "name": return reg.name.toLowerCase().includes(v)
+          case "region": return reg.region.toLowerCase().includes(v)
+          case "category": return reg.category.toLowerCase().includes(v)
+          case "status": return reg.status.toLowerCase().includes(v)
+          case "complianceRate": return String(reg.complianceRate).includes(v)
+          case "lastUpdated": return reg.lastUpdated.toLowerCase().includes(v)
+          default: return true
+        }
+      })
+    })
+  }, [searchQuery, columnFilters])
+
+  const filteredComplianceChecks = useMemo(() => {
+    return mockComplianceChecks.filter((check) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase()
+        const matchesSearch = check.id.toLowerCase().includes(q) ||
+          check.regulation.toLowerCase().includes(q) ||
+          check.product.toLowerCase().includes(q) ||
+          check.result.toLowerCase().includes(q)
+        if (!matchesSearch) return false
+      }
+      return Object.entries(columnFilters).every(([key, filterValue]) => {
+        if (!filterValue) return true
+        const v = filterValue.toLowerCase()
+        switch (key) {
+          case "id": return check.id.toLowerCase().includes(v)
+          case "regulation": return check.regulation.toLowerCase().includes(v)
+          case "product": return check.product.toLowerCase().includes(v)
+          case "result": return check.result.toLowerCase().includes(v)
+          case "findings": return String(check.findings).includes(v)
+          case "checkedDate": return check.checkedDate.toLowerCase().includes(v)
+          case "nextReview": return check.nextReview.toLowerCase().includes(v)
+          default: return true
+        }
+      })
+    })
+  }, [searchQuery, columnFilters])
+
+  const renderFilterableHeader = (label: string, dataKey: string) => (
+    <th className="relative px-4 py-3">
+      <div className="flex items-center gap-1">
+        {label}
+        <button
+          onClick={() => setFilterMenuColumn(filterMenuColumn === dataKey ? null : dataKey)}
+          className={cn(
+            "rounded p-0.5 hover:bg-muted",
+            columnFilters[dataKey] ? "text-primary" : "text-muted-foreground/50"
+          )}
+        >
+          <Filter className="h-3 w-3" />
+        </button>
+      </div>
+      {filterMenuColumn === dataKey && (
+        <ColumnFilterPopover
+          column={dataKey}
+          label={label}
+          value={columnFilters[dataKey] ?? ""}
+          onChange={(val) => setColumnFilters((prev) => ({ ...prev, [dataKey]: val }))}
+          onClear={() => setColumnFilters((prev) => { const next = { ...prev }; delete next[dataKey]; return next })}
+          onClose={() => setFilterMenuColumn(null)}
+        />
+      )}
+    </th>
+  )
+
+  const queryFields: QBField[] = activeTab === "compliance"
+    ? [
+        { field: "id", label: "Check ID", type: "string" },
+        { field: "regulation", label: "Regulation", type: "string" },
+        { field: "product", label: "Product", type: "string" },
+        { field: "result", label: "Result", type: "select", options: ["compliant", "non-compliant", "pending-review"] },
+        { field: "findings", label: "Findings", type: "number" },
+        { field: "checkedDate", label: "Checked Date", type: "date" },
+        { field: "nextReview", label: "Next Review", type: "date" },
+      ]
+    : [
+        { field: "id", label: "Regulation ID", type: "string" },
+        { field: "name", label: "Name", type: "string" },
+        { field: "region", label: "Region", type: "string" },
+        { field: "category", label: "Category", type: "string" },
+        { field: "status", label: "Status", type: "select", options: ["active", "pending", "expired", "draft"] },
+        { field: "complianceRate", label: "Compliance", type: "number" },
+        { field: "lastUpdated", label: "Last Updated", type: "date" },
+      ]
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-background">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {/* Header */}
       <div className="border-b border-border bg-card px-6 py-4">
         <div className="flex items-center justify-between">
@@ -107,10 +219,18 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
               <p className="text-sm text-muted-foreground">Global regulations and compliance management</p>
             </div>
           </div>
-          <button className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4" />
-            Add Regulation
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowLeftPanel((v) => !v)}
+              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${showLeftPanel ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground hover:bg-muted"}`}
+            >
+              Query
+            </button>
+            <button className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+              <Plus className="h-4 w-4" />
+              Add Regulation
+            </button>
+          </div>
         </div>
       </div>
 
@@ -126,8 +246,8 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
                 <div className={cn(
                   "flex items-center gap-1 text-xs font-medium",
                   kpi.label === "Pending Reviews"
-                    ? (kpi.changeType === "down" ? "text-green-600" : "text-red-600")
-                    : (kpi.changeType === "up" ? "text-green-600" : "text-red-600")
+                    ? (kpi.changeType === "down" ? "text-blue-600" : "text-red-600")
+                    : (kpi.changeType === "up" ? "text-blue-600" : "text-red-600")
                 )}>
                   {kpi.changeType === "up" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                   {kpi.change}
@@ -172,43 +292,33 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
         </div>
       </div>
 
-      {/* Search and Filter */}
-      <div className="flex items-center gap-3 border-b border-border px-6 py-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder={`Search ${activeTab}...`}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-lg border border-border bg-background py-2 pl-10 pr-4 text-sm focus:border-primary focus:outline-none"
-          />
-        </div>
-        <button className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-muted">
-          <Filter className="h-4 w-4" />
-          Filter
-        </button>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
+      {/* Content with Query panel */}
+      <div className="flex min-h-0 flex-1 items-stretch gap-4 overflow-x-auto">
+        {showLeftPanel && (
+          <aside className="relative w-[342px] shrink-0 space-y-3 self-stretch overflow-y-auto overflow-x-hidden p-4">
+            <WorkbenchCard title="Query Conditions" badge={`${queryGroup.conditions.length + queryGroup.groups.length} rules`}>
+              <QueryBuilder fields={queryFields} query={queryGroup} onChange={setQueryGroup} storageKey={`qb.gma.${activeTab}`} />
+            </WorkbenchCard>
+          </aside>
+        )}
+        <div className="flex-1 overflow-auto p-6">
         {activeTab === "regulations" && (
           <div className="rounded-lg border border-border bg-card">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                  <th className="px-4 py-3">Regulation ID</th>
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Region</th>
-                  <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Compliance</th>
-                  <th className="px-4 py-3">Last Updated</th>
+                  {renderFilterableHeader("Regulation ID", "id")}
+                  {renderFilterableHeader("Name", "name")}
+                  {renderFilterableHeader("Region", "region")}
+                  {renderFilterableHeader("Category", "category")}
+                  {renderFilterableHeader("Status", "status")}
+                  {renderFilterableHeader("Compliance", "complianceRate")}
+                  {renderFilterableHeader("Last Updated", "lastUpdated")}
                   <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {mockRegulations.map((reg) => (
+                {filteredRegulations.map((reg) => (
                   <tr key={reg.id} className="border-b border-border last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3 text-sm font-medium text-primary">{reg.id}</td>
                     <td className="px-4 py-3 text-sm text-foreground max-w-[250px] truncate">{reg.name}</td>
@@ -258,18 +368,18 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                  <th className="px-4 py-3">Check ID</th>
-                  <th className="px-4 py-3">Regulation</th>
-                  <th className="px-4 py-3">Product</th>
-                  <th className="px-4 py-3">Result</th>
-                  <th className="px-4 py-3">Findings</th>
-                  <th className="px-4 py-3">Checked Date</th>
-                  <th className="px-4 py-3">Next Review</th>
+                  {renderFilterableHeader("Check ID", "id")}
+                  {renderFilterableHeader("Regulation", "regulation")}
+                  {renderFilterableHeader("Product", "product")}
+                  {renderFilterableHeader("Result", "result")}
+                  {renderFilterableHeader("Findings", "findings")}
+                  {renderFilterableHeader("Checked Date", "checkedDate")}
+                  {renderFilterableHeader("Next Review", "nextReview")}
                   <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {mockComplianceChecks.map((check) => (
+                {filteredComplianceChecks.map((check) => (
                   <tr key={check.id} className="border-b border-border last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3 text-sm font-medium text-primary">{check.id}</td>
                     <td className="px-4 py-3 text-sm text-foreground">{check.regulation}</td>
@@ -282,7 +392,7 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
                     <td className="px-4 py-3">
                       <span className={cn(
                         "text-sm font-medium",
-                        check.findings === 0 ? "text-green-600" : check.findings < 3 ? "text-amber-600" : "text-red-600"
+                        check.findings === 0 ? "text-blue-600" : check.findings < 3 ? "text-amber-600" : "text-red-600"
                       )}>
                         {check.findings}
                       </span>
@@ -314,7 +424,10 @@ export function GmaContent({ activeItem }: { activeItem?: string }) {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   )
 }
+
+

@@ -45,7 +45,7 @@ const TASKS: GanttTask[] = [
 
   { id: "t2", name: "Global Motors EMC Testing", assignee: "Mike L.", assigneeColor: "bg-amber-500", startDay: 5, duration: 54, progress: 45, status: "at-risk", priority: "critical", expanded: true },
   { id: "t2a", name: "Pre-scan Setup", parentId: "t2", assignee: "Mike L.", assigneeColor: "bg-amber-500", startDay: 5, duration: 12, progress: 100, status: "completed", priority: "high" },
-  { id: "t2b", name: "EMC Measurements", parentId: "t2", assignee: "Anna K.", assigneeColor: "bg-green-500", startDay: 17, duration: 25, progress: 50, status: "at-risk", priority: "critical", dependencies: ["t2a"] },
+  { id: "t2b", name: "EMC Measurements", parentId: "t2", assignee: "Anna K.", assigneeColor: "bg-blue-500", startDay: 17, duration: 25, progress: 50, status: "at-risk", priority: "critical", dependencies: ["t2a"] },
   { id: "t2c", name: "Report Generation", parentId: "t2", assignee: "Mike L.", assigneeColor: "bg-amber-500", startDay: 42, duration: 17, progress: 0, status: "not-started", priority: "medium", dependencies: ["t2b"] },
 
   { id: "t3", name: "MediDevice FDA Approval", assignee: "Dr. Chen", assigneeColor: "bg-cyan-500", startDay: 10, duration: 171, progress: 30, status: "in-progress", priority: "critical", expanded: true },
@@ -62,7 +62,7 @@ const RESOURCES = [
   { id: "john", name: "John W.", color: "bg-blue-500", role: "Lead Engineer" },
   { id: "sarah", name: "Sarah L.", color: "bg-purple-500", role: "Test Engineer" },
   { id: "mike", name: "Mike L.", color: "bg-amber-500", role: "EMC Specialist" },
-  { id: "anna", name: "Anna K.", color: "bg-green-500", role: "Test Engineer" },
+  { id: "anna", name: "Anna K.", color: "bg-blue-500", role: "Test Engineer" },
   { id: "dr-chen", name: "Dr. Chen", color: "bg-cyan-500", role: "Medical Lead" },
   { id: "lisa", name: "Lisa W.", color: "bg-rose-500", role: "Regulatory" },
   { id: "james", name: "James W.", color: "bg-indigo-500", role: "Compliance" },
@@ -70,7 +70,7 @@ const RESOURCES = [
 ]
 
 const statusConfig: Record<TaskStatus, { label: string; bar: string; bg: string; text: string }> = {
-  "completed":   { label: "Completed",   bar: "bg-green-500",  bg: "bg-green-100",  text: "text-green-700" },
+  "completed":   { label: "Completed",   bar: "bg-blue-500",  bg: "bg-blue-100",  text: "text-blue-700" },
   "in-progress": { label: "In Progress", bar: "bg-blue-500",   bg: "bg-blue-100",   text: "text-blue-700" },
   "at-risk":     { label: "At Risk",     bar: "bg-amber-500",  bg: "bg-amber-100",  text: "text-amber-700" },
   "delayed":     { label: "Delayed",     bar: "bg-red-500",    bg: "bg-red-100",    text: "text-red-700" },
@@ -498,11 +498,11 @@ export function GanttChart() {
                       <div className="mt-0.5 flex items-center gap-1.5">
                         <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
                           <div
-                            className={cn("h-full rounded-full", utilPct > 80 ? "bg-red-500" : utilPct > 60 ? "bg-amber-500" : "bg-green-500")}
+                            className={cn("h-full rounded-full", utilPct > 80 ? "bg-red-500" : utilPct > 60 ? "bg-amber-500" : "bg-blue-500")}
                             style={{ width: `${utilPct}%` }}
                           />
                         </div>
-                        <span className={cn("text-[10px] font-medium", utilPct > 80 ? "text-red-600" : utilPct > 60 ? "text-amber-600" : "text-green-600")}>
+                        <span className={cn("text-[10px] font-medium", utilPct > 80 ? "text-red-600" : utilPct > 60 ? "text-amber-600" : "text-blue-600")}>
                           {utilPct}%
                         </span>
                       </div>
@@ -547,7 +547,7 @@ export function GanttChart() {
                             key={i}
                             className={cn(
                               "absolute top-0 h-full border-r border-border/20",
-                              load > 1 ? "bg-red-50" : load === 1 ? "bg-green-50/40" : ""
+                              load > 1 ? "bg-red-50" : load === 1 ? "bg-blue-50/40" : ""
                             )}
                             style={{ left: i * zoom.colWidth, width: zoom.colWidth }}
                           />
